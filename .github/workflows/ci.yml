@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Unit and contract tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      # Only the fast suite runs here. `npm run test:e2e` needs macOS Chrome,
+      # ffmpeg, and ffprobe, so it stays a local pre-release check.
+      - name: Run Tests
+        run: npm test
