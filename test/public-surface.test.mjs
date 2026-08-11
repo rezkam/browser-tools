@@ -28,7 +28,7 @@ function publicFiles(dir = ROOT) {
       continue;
     }
     if (SKIP_FILES.has(entry.name)) continue;
-    if (!TEXT_EXTENSIONS.has(extname(entry.name))) continue;
+    if (entry.name !== 'LICENSE' && !TEXT_EXTENSIONS.has(extname(entry.name))) continue;
     files.push(join(dir, entry.name));
   }
   return files;
@@ -43,4 +43,9 @@ test('public skill surface does not include local account or machine details', (
     }
   }
   assert.deepEqual(leaks, []);
+});
+
+test('license appendix retains the canonical copyright placeholder', () => {
+  const license = readFileSync(join(ROOT, 'LICENSE'), 'utf-8');
+  assert.match(license, /^   Copyright \[yyyy\] \[name of copyright owner\]$/m);
 });
