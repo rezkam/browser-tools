@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# npm pack output
+*.tgz
+
+# Logs and coverage
+*.log
+coverage/
+
+# Local Browser Tools config and captured artifacts
+config/*.local.json
+artifacts/
+*.gif
+*.har
+*.jsonl
+.gif-review/
+
+# Local agent state and scratch scripts
+.claude/
+.pi/
+.tmp-*.mjs
+*.tmp.mjs

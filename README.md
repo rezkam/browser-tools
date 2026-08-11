@@ -2,7 +2,7 @@
 
 Sandboxed, owner-token-protected Chrome automation for AI agents: launch a managed Chrome with a copied profile, navigate, evaluate page JavaScript, screenshot, and stop it safely, all without touching your main Chrome.
 
-This package is the npm-installable form of the `browser-tools` skill in [browser-tools](https://github.com/rezkam/browser-tools). The skill itself now drives this package's CLI, so there is one supported way to run Browser Tools whether you got here through the skill or through npm directly.
+This repository is the source of both the `browser-tools` skill and the `@rezkam/browser-tools` package. The skill drives this package's CLI, so there is one supported way to run Browser Tools whether you got here through the skill or through npm directly.
 
 ## Install
 
@@ -80,7 +80,7 @@ import { connectBrowser, activePage, withBrowser } from '@rezkam/browser-tools';
 - Config, cache, and artifact directories default to `~/.agents/browser-tools/config.json`, `~/.cache/pi-browser-tools`, and `/tmp`, overridable via `BROWSER_TOOLS_CONFIG_DIR`, `BROWSER_TOOLS_CACHE_DIR`, `BROWSER_TOOLS_ARTIFACT_DIR`, `BROWSER_TOOLS_CHROME_SOURCE_DIR`, and `BROWSER_TOOLS_CHROME_BIN`.
 - Requires macOS Chrome and Node.js 20+. GIF recording and review require ffmpeg and ffprobe.
 
-For the full behavior reference (profile sync internals, ownership rules, stop safety checks, gotchas), see the skill docs in the source repository: [SKILL.md](https://github.com/rezkam/browser-tools/blob/main/SKILL.md) and [references/browser-control.md](https://github.com/rezkam/browser-tools/blob/main/references/browser-control.md).
+For the full behavior reference (profile sync internals, ownership rules, stop safety checks, gotchas), see the skill docs in this repository: [SKILL.md](https://github.com/rezkam/browser-tools/blob/main/SKILL.md) and [references/browser-control.md](https://github.com/rezkam/browser-tools/blob/main/references/browser-control.md).
 
 ## Testing
 
