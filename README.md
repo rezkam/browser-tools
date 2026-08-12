@@ -50,7 +50,7 @@ browser-tools nav https://example.com --port <reported port>
 browser-tools eval 'document.title' --port <reported port>
 browser-tools screenshot --full --port <reported port>
 
-browser-tools stop --port <reported port>
+browser-tools stop --clean --port <reported port>
 ```
 
 Use `--profile "<profile or alias>"` when an existing login is needed, `--sync` to refresh the copied profile, or `--task <task>` to use configured task profiles.
@@ -79,7 +79,7 @@ Run `browser-tools --help` for the command list. Commands with detailed option r
 - HAR files, extracted recipes, raw CDP events, and GIF review artifacts are written as private local files. Network and protocol output preserves exact evidence by default, with `--redact` available when sensitive values are not needed.
 - `extract-har` only describes captured requests. It does not execute or replay them. Known direct CDP methods that bypass managed-browser lifecycle controls are blocked.
 
-Browser Tools stores local configuration under `~/.agents/browser-tools`, managed profiles under `~/.cache/pi-browser-tools`, and screenshots or other artifacts without an explicit path in the system temporary directory. These locations can be overridden with the documented `BROWSER_TOOLS_*` environment variables.
+Browser Tools stores local configuration under `~/.agents/browser-tools` and managed profiles under `~/.cache/pi-browser-tools`. Timestamped artifacts such as screenshots default to the system temporary directory, while derived outputs such as HAR recipes and GIF reviews stay beside their input files. The documented `BROWSER_TOOLS_*` environment variables override configurable locations.
 
 For detailed ownership rules, profile behavior, capture filters, and command options, see the repository's [SKILL.md](https://github.com/rezkam/browser-tools/blob/main/SKILL.md) and [Browser Control reference](https://github.com/rezkam/browser-tools/blob/main/references/browser-control.md).
 
