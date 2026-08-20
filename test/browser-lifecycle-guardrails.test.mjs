@@ -330,6 +330,53 @@ test('launcher identity remains stable when a live process changes its title', (
   });
 });
 
+test('launcher identity canonicalizes locale and timezone differences', () => {
+  withTempCache((tmp) => {
+    const binDir = join(tmp, 'bin');
+    mkdirSync(binDir);
+    writeFileSync(
+      join(binDir, 'ps'),
+      '#!/bin/sh\nif [ "$LC_ALL" = "C" ] && [ "$TZ" = "UTC" ]; then\n  printf "Mon Jan  1 00:00:00 2024\\n"\nelse\n  printf "Sun Dec 31 14:00:00 2023\\n"\nfi\n',
+      { mode: 0o755 },
+    );
+
+    const previousPath = process.env.PATH;
+    const previousLocale = process.env.LC_ALL;
+    const previousTimezone = process.env.TZ;
+    process.env.PATH = `${binDir}:${previousPath}`;
+    process.env.LC_ALL = 'C';
+    process.env.TZ = 'UTC';
+    try {
+      const launchLock = acquireLaunchLock();
+      assert.ok(launchLock, 'test needs the canonical process identity');
+      const launcherIdentity = JSON.parse(
+        readFileSync(join(launchLock.lockDir, 'lock.json'), 'utf-8'),
+      ).processStartIdentity;
+      launchLock.release();
+      const browser = writeTrackedBrowserState(tmp, {
+        pid: 575,
+        port: 9230,
+        launchedByPid: process.pid,
+        launchedByProcessStartIdentity: launcherIdentity,
+      });
+
+      process.env.LC_ALL = 'fixture_LOCALE';
+      process.env.TZ = 'Pacific/Honolulu';
+      assert.deepEqual(
+        orphanedManagedBrowsers([{ ...browser, ageMs: STALE_BROWSER_AGE_MS + 1 }]),
+        [],
+        'caller locale and timezone must not change a live launcher identity',
+      );
+    } finally {
+      process.env.PATH = previousPath;
+      if (previousLocale === undefined) delete process.env.LC_ALL;
+      else process.env.LC_ALL = previousLocale;
+      if (previousTimezone === undefined) delete process.env.TZ;
+      else process.env.TZ = previousTimezone;
+    }
+  });
+});
+
 test('orphanedManagedBrowsers gives a recently exited launcher a grace period', () => {
   withTempCache((tmp) => {
     const launcher = spawnSync(process.execPath, ['-e', '']);

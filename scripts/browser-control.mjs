@@ -2094,7 +2094,12 @@ function processStartIdentity(pid) {
   const result = spawnSync(
     'ps',
     ['-p', String(normalizedPid), '-o', 'lstart='],
-    { encoding: 'utf-8' },
+    {
+      encoding: 'utf-8',
+      // BSD ps formats lstart through the caller's locale and timezone. Canonicalize both so two
+      // processes observing the same live launcher hash the same immutable start metadata.
+      env: { ...process.env, LC_ALL: 'C', LANG: 'C', LC_TIME: 'C', TZ: 'UTC' },
+    },
   );
   if (result.error || result.status !== 0) return null;
   const startedAt = result.stdout.trim();
