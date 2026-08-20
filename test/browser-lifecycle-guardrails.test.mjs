@@ -301,6 +301,35 @@ test('orphanedManagedBrowsers protects an old browser while its recorded launche
   });
 });
 
+test('launcher identity remains stable when a live process changes its title', () => {
+  withTempCache((tmp) => {
+    const launchLock = acquireLaunchLock();
+    assert.ok(launchLock, 'test needs the current process identity');
+    const launcherIdentity = JSON.parse(
+      readFileSync(join(launchLock.lockDir, 'lock.json'), 'utf-8'),
+    ).processStartIdentity;
+    launchLock.release();
+    const browser = writeTrackedBrowserState(tmp, {
+      pid: 550,
+      port: 9229,
+      launchedByPid: process.pid,
+      launchedByProcessStartIdentity: launcherIdentity,
+    });
+
+    const previousTitle = process.title;
+    try {
+      process.title = 'browser-tools-live-owner';
+      assert.deepEqual(
+        orphanedManagedBrowsers([{ ...browser, ageMs: STALE_BROWSER_AGE_MS + 1 }]),
+        [],
+        'mutable process titles must not make a live launcher look like a reused PID',
+      );
+    } finally {
+      process.title = previousTitle;
+    }
+  });
+});
+
 test('orphanedManagedBrowsers gives a recently exited launcher a grace period', () => {
   withTempCache((tmp) => {
     const launcher = spawnSync(process.execPath, ['-e', '']);

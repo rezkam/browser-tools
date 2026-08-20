@@ -108,7 +108,7 @@ An old owned browser is reclaimable when both of these conditions hold:
 - it has run for at least two hours
 - its recorded launcher process has exited or its PID now belongs to a different process
 
-The lifecycle record stores both the launcher PID and a hash of its process-start identity. This prevents PID reuse from making an abandoned session look active. A process-table inspection failure keeps the browser protected. Age alone never authorizes a reap, so a browser whose launcher is still active remains protected regardless of age.
+The lifecycle record stores a hash of the launcher PID and its kernel-reported start time. Both remain immutable for the process lifetime, so changes to its title or arguments do not invalidate ownership. This also prevents PID reuse from making an abandoned session look active. A process-table inspection failure keeps the browser protected. Age alone never authorizes a reap, so a browser whose launcher is still active remains protected regardless of age.
 
 The two-hour period is a grace period for command-line launches, whose launcher exits after returning the browser handle. After that period, ownership still protects direct connection and stop commands, but it does not reserve memory forever when no launcher remains.
 

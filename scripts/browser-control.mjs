@@ -2093,12 +2093,15 @@ function processStartIdentity(pid) {
   if (!Number.isInteger(normalizedPid) || normalizedPid < 1) return null;
   const result = spawnSync(
     'ps',
-    ['-p', String(normalizedPid), '-o', 'lstart=', '-o', 'command='],
+    ['-p', String(normalizedPid), '-o', 'lstart='],
     { encoding: 'utf-8' },
   );
   if (result.error || result.status !== 0) return null;
-  const identity = result.stdout.trim();
-  if (!identity) return null;
+  const startedAt = result.stdout.trim();
+  if (!startedAt) return null;
+  // PID and kernel-reported start time stay fixed for the process lifetime. Command and argv do not:
+  // process.title can rewrite them while the same live process continues owning the browser.
+  const identity = `${normalizedPid}\n${startedAt}`;
   return createHash('sha256').update(identity, 'utf8').digest('hex');
 }
 
