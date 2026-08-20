@@ -7,7 +7,7 @@ This repository provides both the `browser-tools` skill and the `@rezkam/browser
 ## Features
 
 - **Isolated browser sessions:** launch windowed or headless Chrome with a fresh profile or a copied Chrome profile, including existing site sessions and extensions.
-- **Safe lifecycle management:** every managed browser has an owner token. Browser Tools verifies process identity before connecting or stopping, limits concurrent browsers, reports stale sessions, and can reap orphaned or unowned sessions.
+- **Safe lifecycle management:** every managed browser has an owner token. Browser Tools verifies process identity before connecting or stopping, limits concurrent browsers, and automatically reclaims old sessions after their recorded launcher exits.
 - **Page control and inspection:** navigate tabs, evaluate asynchronous JavaScript, take viewport or full-page screenshots, and interactively pick single or multiple DOM elements.
 - **Page extraction:** collect article-like links and nearby timestamps, or extract readable article text from the active tab.
 - **Visual evidence:** record an active-tab interaction as a GIF, then generate a sampled contact sheet and JSON metadata for review.
@@ -76,6 +76,7 @@ Run `browser-tools --help` for the command list. Commands with detailed option r
 - Commands that connect to Chrome or stop an owned browser require the owner token printed by `start`. The token protects browser control, recordings, network capture, CDP access, and shutdown.
 - Google identity data is removed from copied profiles by default to protect the source session. `--include-google` is an explicit opt-in for Google-backed workflows.
 - Starting without an explicit port can reuse a browser already owned by the caller or allocate another available port. The default concurrent browser limit is five.
+- A managed browser older than two hours becomes reclaimable after its recorded launcher exits. The next start reaps it before enforcing the concurrency limit, while browsers with live launchers remain protected regardless of age.
 - HAR files, extracted recipes, raw CDP events, and GIF review artifacts are written as private local files. Network and protocol output preserves exact evidence by default, with `--redact` available when sensitive values are not needed.
 - `extract-har` only describes captured requests. It does not execute or replay them. Known direct CDP methods that bypass managed-browser lifecycle controls are blocked.
 

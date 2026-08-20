@@ -13,6 +13,7 @@ import { join } from 'node:path';
 
 import {
   DEFAULT_MAX_MANAGED_BROWSERS,
+  STALE_BROWSER_AGE_MS,
   assertManagedBrowserCapacity,
   buildBrowserToolsConfig,
   forcedKillStatus,
@@ -22,6 +23,7 @@ import {
   managedBrowserCapacity,
   managedBrowserReuseDecision,
   managedBrowserStartupWarnings,
+  launchChrome,
   startChrome,
   maxManagedBrowsers,
   orphanedManagedBrowsers,
@@ -61,6 +63,34 @@ function withTempCache(fn) {
     else process.env.BROWSER_TOOLS_CACHE_DIR = previous;
     rmSync(tmp, { recursive: true, force: true });
   }
+}
+
+function writeTrackedBrowserState(tmp, {
+  pid,
+  port,
+  ownerId = 'pipeline-task',
+  launchedByPid,
+  launchedByProcessStartIdentity,
+}) {
+  const userDataDir = join(tmp, `chrome-data-${port}`);
+  const managedToken = `tok-${port}`;
+  writeFileSync(join(tmp, `chrome-${port}.pid`), String(pid));
+  writeFileSync(join(tmp, `chrome-${port}.json`), JSON.stringify({
+    managedBy: 'browser-tools',
+    pid,
+    port,
+    userDataDir,
+    managedToken,
+    ownerId,
+    launchedByPid,
+    launchedByProcessStartIdentity,
+    args: [
+      `--remote-debugging-port=${port}`,
+      `--user-data-dir=${userDataDir}`,
+      `--pi-browser-tools-managed=${managedToken}`,
+    ],
+  }));
+  return { pid, port, userDataDir, managedToken };
 }
 
 test('parseProcessAgeMs understands every ps etime format', () => {
@@ -211,6 +241,100 @@ test('orphanedManagedBrowsers reclaims a fully tracked browser that nothing owns
       [200],
       'an unowned browser is unreachable by stop, so reap must be able to reclaim it',
     );
+  });
+});
+
+test('orphanedManagedBrowsers reclaims an old tracked browser after its launcher exits', () => {
+  withTempCache((tmp) => {
+    const launcher = spawnSync(process.execPath, ['-e', '']);
+    assert.ok(Number.isInteger(launcher.pid) && launcher.pid > 0, 'test needs an exited launcher pid');
+    const browser = writeTrackedBrowserState(tmp, {
+      pid: 300,
+      port: 9224,
+      launchedByPid: launcher.pid,
+    });
+    assert.deepEqual(
+      orphanedManagedBrowsers([{ ...browser, ageMs: STALE_BROWSER_AGE_MS + 1 }])
+        .map((entry) => entry.pid),
+      [browser.pid],
+      'a browser must not keep its slot after its launcher is gone and the grace period expires',
+    );
+  });
+});
+
+test('orphanedManagedBrowsers detects when the launcher PID was reused', () => {
+  withTempCache((tmp) => {
+    const browser = writeTrackedBrowserState(tmp, {
+      pid: 400,
+      port: 9225,
+      launchedByPid: process.pid,
+      launchedByProcessStartIdentity: 'identity-from-an-exited-process',
+    });
+    assert.deepEqual(
+      orphanedManagedBrowsers([{ ...browser, ageMs: STALE_BROWSER_AGE_MS + 1 }])
+        .map((entry) => entry.pid),
+      [browser.pid],
+      'a reused launcher PID must not keep an expired browser lease alive',
+    );
+  });
+});
+
+test('orphanedManagedBrowsers protects an old browser while its recorded launcher is alive', () => {
+  withTempCache((tmp) => {
+    const launchLock = acquireLaunchLock();
+    assert.ok(launchLock, 'test needs the current process identity');
+    const launcherIdentity = JSON.parse(
+      readFileSync(join(launchLock.lockDir, 'lock.json'), 'utf-8'),
+    ).processStartIdentity;
+    launchLock.release();
+    const browser = writeTrackedBrowserState(tmp, {
+      pid: 500,
+      port: 9226,
+      launchedByPid: process.pid,
+      launchedByProcessStartIdentity: launcherIdentity,
+    });
+    assert.deepEqual(
+      orphanedManagedBrowsers([{ ...browser, ageMs: STALE_BROWSER_AGE_MS + 1 }]),
+      [],
+      'age alone must never let the reaper kill a browser whose launcher is still active',
+    );
+  });
+});
+
+test('orphanedManagedBrowsers gives a recently exited launcher a grace period', () => {
+  withTempCache((tmp) => {
+    const launcher = spawnSync(process.execPath, ['-e', '']);
+    assert.ok(Number.isInteger(launcher.pid) && launcher.pid > 0, 'test needs an exited launcher pid');
+    const browser = writeTrackedBrowserState(tmp, {
+      pid: 600,
+      port: 9227,
+      launchedByPid: launcher.pid,
+    });
+    assert.deepEqual(
+      orphanedManagedBrowsers([{ ...browser, ageMs: STALE_BROWSER_AGE_MS - 1 }]),
+      [],
+      'launcher exit must not make a fresh browser immediately reclaimable',
+    );
+  });
+});
+
+test('launchChrome records the launcher process identity used by lease expiry', () => {
+  withTempCache((tmp) => {
+    const previousChromeBin = process.env.BROWSER_TOOLS_CHROME_BIN;
+    process.env.BROWSER_TOOLS_CHROME_BIN = process.execPath;
+    try {
+      launchChrome({ port: 9228, ownerToken: 'owner-token', ownerId: 'pipeline-task' });
+      const state = JSON.parse(readFileSync(join(tmp, 'chrome-9228.json'), 'utf-8'));
+      assert.equal(state.launchedByPid, process.pid);
+      assert.match(
+        state.launchedByProcessStartIdentity,
+        /^[a-f0-9]{64}$/,
+        'new lifecycle state must distinguish the launcher from a future process reusing its PID',
+      );
+    } finally {
+      if (previousChromeBin === undefined) delete process.env.BROWSER_TOOLS_CHROME_BIN;
+      else process.env.BROWSER_TOOLS_CHROME_BIN = previousChromeBin;
+    }
   });
 });
 
@@ -682,7 +806,11 @@ test('managedBrowserStartupWarnings warns on the last slot and on leftover old s
   assert.match(staleWarnings[0], /9222|9223/, 'must name the ports to inspect');
   assert.match(staleWarnings[0], /stop\.mjs/, 'must name the cleanup command');
   assert.match(staleWarnings[0], /--port <n> --owner-token/, 'tracked browsers need the normal owner-protected stop path');
-  assert.match(staleWarnings[0], /untracked/, 'reap and prune must be described as orphan-only recovery');
+  assert.match(
+    staleWarnings[0],
+    /launcher.*exited/i,
+    'the warning must explain that expired browsers with exited launchers are reclaimed automatically',
+  );
 });
 
 test('managedBrowserReuseDecision is the single gate both explicit and auto-allocated starts share', () => {
@@ -1563,7 +1691,7 @@ test('stop --reap exits non-zero when a browser could not be reaped', () => {
     });
     const clean = run({});
     assert.equal(clean.status, 0, 'nothing to reap is a success');
-    assert.match(clean.stdout, /No untracked managed browsers found/);
+    assert.match(clean.stdout, /No reclaimable managed browsers found/);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

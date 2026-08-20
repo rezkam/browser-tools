@@ -83,7 +83,7 @@ The cached profile copy is not live. A site can be logged in in normal Chrome wh
 
 ### Cleanup
 
-Each clone lives in a per-port sandbox directory (about 400 MB per profile), and each running browser costs roughly 800 MB of memory across its process tree. `browser-tools stop --clean` removes the clone data directory and its per-port sync-state file for the stopped browser. `browser-tools stop --prune` first reaps untracked browsers, then sweeps every cached clone that is not currently in use by a running managed Chrome, removing each stale clone directory along with its sync-state and lifecycle files; add `--dry-run` to preview. Prune keeps any clone still owned by a live process and never touches non-clone cache entries such as ai-chat data.
+Each clone lives in a per-port sandbox directory (about 400 MB per profile), and each running browser costs roughly 800 MB of memory across its process tree. `browser-tools stop --clean` removes the clone data directory and its per-port sync-state file for the stopped browser. `browser-tools stop --prune` first reaps reclaimable browsers, then sweeps every cached clone that is not currently in use by a running managed Chrome, removing each stale clone directory along with its sync-state and lifecycle files; add `--dry-run` to preview. Prune keeps any clone still owned by a live process and never touches non-clone cache entries such as ai-chat data.
 
 ## Concurrency limits
 
@@ -97,18 +97,27 @@ The count comes from scanning the process table for browsers carrying the manage
 
 The cap holds under concurrency. Slot reservation and the spawn happen together under a single cache-wide `launch.lock`, because the per-port locks cannot bound a total: two starts racing for different ports never contend, so both could pass the same check and both launch. The reservation count also includes a browser whose state file exists with a live PID but which has not yet appeared in the process table, closing the gap right after a spawn. A start that cannot take the launch lock within 30 seconds fails rather than proceeding uncounted.
 
-### Reaping untracked browsers
+### Reaping abandoned browsers
 
 A managed browser whose lifecycle files no longer describe it is an **orphan**. That includes a half-written pair where only one of the pid and state files survives, and state that contradicts the running process on port, clone directory, or managed token. The orphan test deliberately matches what `stop` verifies, so the two can never disagree and strand a browser between them.
 
 A browser that **nothing owns** is also reclaimable, even when its lifecycle files are perfectly consistent. No surviving caller holds a token that could stop it, so refusing to reap it is what would make the leak permanent. For the same reason `browser-tools stop --port <n>` may reclaim an unowned browser without a token, and reports `(reclaimed: nothing owned it)` when it does. An **owned** browser still requires its matching owner token, and adopting or connecting never accepts an unowned browser, so this cannot be used to hijack one.
 
-An orphan: `browser-tools stop --port <n>` cannot see it, and it holds both a memory slot and its clone directory indefinitely.
+An old owned browser is reclaimable when both of these conditions hold:
+
+- it has run for at least two hours
+- its recorded launcher process has exited or its PID now belongs to a different process
+
+The lifecycle record stores both the launcher PID and a hash of its process-start identity. This prevents PID reuse from making an abandoned session look active. A process-table inspection failure keeps the browser protected. Age alone never authorizes a reap, so a browser whose launcher is still active remains protected regardless of age.
+
+The two-hour period is a grace period for command-line launches, whose launcher exits after returning the browser handle. After that period, ownership still protects direct connection and stop commands, but it does not reserve memory forever when no launcher remains.
+
+An abandoned browser holds both a memory slot and its clone directory indefinitely unless the reaper clears it.
 
 - `browser-tools stop --status` lists every running managed browser with its port, PID, and age, plus the cap and any warnings.
-- `browser-tools stop --reap` kills the orphans. Add `--dry-run` to list them first. It exits non-zero if a browser could not be reaped, so a script freeing a slot can tell the cleanup did not work.
+- `browser-tools stop --reap` kills reclaimable browsers. Add `--dry-run` to list them first. It exits non-zero if a browser could not be reaped, so a script freeing a slot can tell the cleanup did not work.
 - `browser-tools stop --prune --dry-run` previews the reap and the clone removals it enables, rather than reporting those clones as still in use.
-- `browser-tools start` reaps orphans automatically before counting against the cap, then prunes their clone dirs, so a leak self-heals on the next start.
+- `browser-tools start` reaps reclaimable browsers automatically before counting against the cap, then prunes their clone dirs, so a leak self-heals on the next start.
 
 Reaping only ever targets processes carrying the Browser Tools managed token *and* a user-data-dir inside the cache directory, so the main Chrome and any unrelated browser are never candidates. Every PID is re-verified immediately before each signal, and the check compares the full scanned identity (port, clone directory, and the per-launch managed token) rather than only that the PID is *some* managed Chrome. A PID recycled between the scan and the kill, even by another managed browser, is therefore skipped rather than signalled. A port held by a concurrent start's lock is skipped, because that browser exists before its state file does.
 
@@ -118,7 +127,7 @@ Every Managed Browser is owned by one agent token. For a user-supplied token, ex
 
 `browser-tools start` also accepts `--owner-id <label>` or `--agent-id <label>` for diagnostics. The owner ID is not a secret and is not enough to connect or stop. The owner token is hashed in the managed-state file, not written in plain text.
 
-**Every managed browser must have an owner id.** `startChrome` refuses to launch without one, because an unowned browser cannot be adopted or stopped by anything: its owner token exists only in the caller that started it, so once that process exits the browser holds a slot, its clone directory, and its memory with no way to reclaim it. Library callers pass `ownerId` themselves. A command-line `browser-tools start` stamps `cli` when neither `--owner-id` nor `BROWSER_TOOLS_OWNER_ID` is set, so a shell launch is never anonymous. Each lifecycle record also stores `launchedByPid`, so a browser that outlives its launcher is still attributable.
+**Every managed browser must have an owner id.** `startChrome` refuses to launch without one, because an unowned browser cannot be adopted or stopped by anything: its owner token exists only in the caller that started it. Library callers pass `ownerId` themselves. A command-line `browser-tools start` stamps `cli` when neither `--owner-id` nor `BROWSER_TOOLS_OWNER_ID` is set, so a shell launch is never anonymous. Each lifecycle record also stores the launcher PID and process-start identity. These fields let the automatic reaper distinguish a live owner process from an abandoned session without weakening token checks for connection or direct stop operations.
 
 Ownership rules:
 
