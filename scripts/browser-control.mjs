@@ -49,7 +49,7 @@ export const MAX_BROWSERS_ENV = 'BROWSER_TOOLS_MAX_BROWSERS';
 // A managed browser older than this is almost certainly a leftover from a finished agent session.
 export const STALE_BROWSER_AGE_MS = 2 * 60 * 60 * 1000;
 export const PENDING_BROWSER_STATE_MAX_AGE_MS = 5000;
-export const REAP_HINT = 'Run scripts/stop.mjs --reap to sweep managed browsers that no lifecycle file accounts for.';
+export const REAP_HINT = 'Run scripts/stop.mjs --reap to sweep reclaimable managed browsers whose lifecycle tracking or launcher lease has expired.';
 
 export function agentConfigRoot() {
   return process.env.AGENT_CONFIG_DIR || join(homedir(), '.agents');
@@ -1212,6 +1212,21 @@ export function staleManagedBrowsers(processes = listManagedChromeProcesses(), {
   return processes.filter((entry) => Number.isFinite(entry.ageMs) && entry.ageMs >= maxAgeMs);
 }
 
+function managedBrowserLauncherIsActive(state) {
+  const launcherPid = Number(state?.launchedByPid);
+  if (!Number.isInteger(launcherPid) || launcherPid < 1) return false;
+  const recordedIdentity = typeof state?.launchedByProcessStartIdentity === 'string'
+    ? state.launchedByProcessStartIdentity
+    : null;
+  if (!recordedIdentity) return processExists(launcherPid);
+
+  const currentIdentity = processStartIdentity(launcherPid);
+  if (currentIdentity) return currentIdentity === recordedIdentity;
+  // A transient process-table read failure must fail closed. Only consider the launcher gone when
+  // the independent process existence check agrees that the PID no longer exists.
+  return processExists(launcherPid);
+}
+
 function readManagedPid(pidFile) {
   try {
     const pid = Number.parseInt(readFileSync(pidFile, 'utf-8').trim(), 10);
@@ -1221,8 +1236,8 @@ function readManagedPid(pidFile) {
   }
 }
 
-// A managed browser whose lifecycle files no longer describe it. `stop --port N` cannot reach these,
-// so they would otherwise accumulate forever.
+// Managed browsers the reaper may safely reclaim. This includes browsers whose lifecycle files no
+// longer describe them, unowned browsers, and old browsers whose recorded launcher has exited.
 export function orphanedManagedBrowsers(processes = listManagedChromeProcesses()) {
   return processes.filter((entry) => {
     // A concurrent start holds the port lock from before the spawn until the readiness probe passes,
@@ -1245,6 +1260,13 @@ export function orphanedManagedBrowsers(processes = listManagedChromeProcesses()
     // An unowned browser is tracked but unreachable: its owner token lives only in the caller that
     // started it, so once that process exits nothing can adopt or stop it. Reclaim it as garbage.
     if (!normalizeOwnerValue(state.ownerId)) return true;
+    // Ownership cannot make a leaked browser immortal. Once the browser is old enough to be stale
+    // and the process that launched it is gone, no live owner process remains to close it.
+    if (
+      Number.isFinite(entry.ageMs) &&
+      entry.ageMs >= STALE_BROWSER_AGE_MS &&
+      !managedBrowserLauncherIsActive(state)
+    ) return true;
     return false;
   });
 }
@@ -1253,9 +1275,9 @@ export function forcedKillStatus(exited) {
   return exited ? 'killed' : 'failed';
 }
 
-// Kill managed browsers that no lifecycle file accounts for, then drop their leftover clone dirs.
-// Safe by construction: every target came from parseManagedChromeProcesses, so it carries our
-// managed token and a user-data-dir inside our cache dir.
+// Kill reclaimable managed browsers. Safe by construction: every target came from
+// parseManagedChromeProcesses, so it carries our managed token and a user-data-dir inside our cache
+// dir. Old tracked browsers are eligible only after their launcher exits and the grace period ends.
 export function reapOrphanedChromes({ dryRun = false, processes = listManagedChromeProcesses() } = {}) {
   const orphans = orphanedManagedBrowsers(processes);
   const reaped = [];
@@ -1312,7 +1334,7 @@ function describeBrowserInventory(processes, { limit = 10, staleMaxAgeMs = STALE
   const lines = processes.slice(0, limit).map((entry) => {
     const stale = Number.isFinite(entry.ageMs) && entry.ageMs >= staleMaxAgeMs;
     const pid = Number.isInteger(Number(entry.pid)) ? `PID ${entry.pid}` : 'PID unknown';
-    return `    :${entry.port}  ${pid}  up ${formatBrowserAge(entry.ageMs)}${stale ? '   <- idle over 2h, likely a leftover' : ''}`;
+    return `    :${entry.port}  ${pid}  up ${formatBrowserAge(entry.ageMs)}${stale ? '   <- running over 2h, likely a leftover' : ''}`;
   });
   if (processes.length > limit) lines.push(`    ... and ${processes.length - limit} more`);
   return lines.join('\n');
@@ -1335,7 +1357,7 @@ export function assertManagedBrowserCapacity({ processes = listManagedChromeProc
     staleLine +
     `\n  To continue, do one of these:\n` +
     `    scripts/stop.mjs --status              see this list again at any time\n` +
-    `    scripts/stop.mjs --reap --dry-run      preview browsers no lifecycle file tracks\n` +
+    `    scripts/stop.mjs --reap --dry-run      preview reclaimable leaked browsers\n` +
     `    scripts/stop.mjs --prune               reap those, then drop their unused clones\n` +
     `    scripts/stop.mjs --port <n> --owner-token "$${OWNER_TOKEN_ENV}"    stop one you own\n\n` +
     `  Best fix if these are yours: export ${OWNER_TOKEN_ENV} from the first start, and later\n` +
@@ -1366,7 +1388,8 @@ export function managedBrowserStartupWarnings({
       `${stale.length} managed browser${stale.length === 1 ? '' : 's'} ${stale.length === 1 ? 'has' : 'have'} been running over ${hours}h ` +
       `(${describePorts(stale)}), likely left over from a finished session. ` +
       `Stop a tracked browser with scripts/stop.mjs --port <n> --owner-token "$${OWNER_TOKEN_ENV}". ` +
-      `Use scripts/stop.mjs --reap --dry-run and scripts/stop.mjs --prune only for untracked browsers.`,
+      `Old sessions whose launcher has exited are reclaimed automatically by the next start. ` +
+      `Use scripts/stop.mjs --reap --dry-run to preview all reclaimable sessions.`,
     );
   }
   return warnings;
@@ -1528,6 +1551,9 @@ export function launchChrome({ port = DEFAULT_PORT, profileName = null, userData
     ...buildOwnerState({ ownerToken: effectiveOwnerToken, ownerId }),
     // Who launched this browser, so a leaked one is attributable instead of anonymous.
     launchedByPid: process.pid,
+    // The PID can be reused after the launcher exits. Record its start identity so a different
+    // process inheriting the same number cannot keep an expired browser lease alive.
+    launchedByProcessStartIdentity: processStartIdentity(process.pid),
     args,
     startedAt: new Date().toISOString(),
   }, null, 2));
@@ -1580,11 +1606,11 @@ export async function startChrome({
   const { requestedProfileName, resolvedProfileName } = resolveStartProfileName({ profileName, taskName, defaultProfileName });
   ensureCacheDir();
 
-  // Clean up before counting, so the cap reflects browsers that are actually reachable. Orphans are
-  // browsers no lifecycle file tracks: nothing can address or stop them, so they are pure garbage.
+  // Clean up before counting, so the cap reflects browsers that are still actively owned. Untracked
+  // browsers and old browsers whose launcher has exited are safe to reclaim before reserving a slot.
   const reaped = reapOrphanedChromes();
   if (reaped.reaped.length) {
-    console.error(`⟳ Reaped ${reaped.reaped.length} untracked managed browser${reaped.reaped.length === 1 ? '' : 's'} (${describePorts(reaped.reaped)})`);
+    console.error(`⟳ Reaped ${reaped.reaped.length} reclaimable managed browser${reaped.reaped.length === 1 ? '' : 's'} (${describePorts(reaped.reaped)})`);
     try {
       pruneChromeClones({ keepPorts: [normalizedPort] });
     } catch {
@@ -2067,12 +2093,20 @@ function processStartIdentity(pid) {
   if (!Number.isInteger(normalizedPid) || normalizedPid < 1) return null;
   const result = spawnSync(
     'ps',
-    ['-p', String(normalizedPid), '-o', 'lstart=', '-o', 'command='],
-    { encoding: 'utf-8' },
+    ['-p', String(normalizedPid), '-o', 'lstart='],
+    {
+      encoding: 'utf-8',
+      // BSD ps formats lstart through the caller's locale and timezone. Canonicalize both so two
+      // processes observing the same live launcher hash the same immutable start metadata.
+      env: { ...process.env, LC_ALL: 'C', LANG: 'C', LC_TIME: 'C', TZ: 'UTC' },
+    },
   );
   if (result.error || result.status !== 0) return null;
-  const identity = result.stdout.trim();
-  if (!identity) return null;
+  const startedAt = result.stdout.trim();
+  if (!startedAt) return null;
+  // PID and kernel-reported start time stay fixed for the process lifetime. Command and argv do not:
+  // process.title can rewrite them while the same live process continues owning the browser.
+  const identity = `${normalizedPid}\n${startedAt}`;
   return createHash('sha256').update(identity, 'utf8').digest('hex');
 }
 

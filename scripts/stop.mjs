@@ -8,8 +8,8 @@
  *   scripts/stop.mjs --port 9223
  *   scripts/stop.mjs --clean
  *   scripts/stop.mjs --dry-run
- *   scripts/stop.mjs --prune            (reap orphans, then remove all cached clones not in use)
- *   scripts/stop.mjs --reap             (kill managed browsers no lifecycle file tracks)
+ *   scripts/stop.mjs --prune            (reap leftovers, then remove all cached clones not in use)
+ *   scripts/stop.mjs --reap             (kill reclaimable managed browsers)
  *   scripts/stop.mjs --reap --dry-run   (list them without killing anything)
  *   scripts/stop.mjs --status           (show how many managed browsers are running)
  *   scripts/stop.mjs --owner-token "$BROWSER_TOOLS_OWNER_TOKEN"
@@ -35,7 +35,7 @@ const ownerToken = parseOwnerToken(args);
 
 function reportReaped(reaped, wasDryRun) {
   if (!reaped.length) {
-    console.log('No untracked managed browsers found.');
+    console.log('No reclaimable managed browsers found.');
     return;
   }
   for (const entry of reaped) {
