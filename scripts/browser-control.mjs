@@ -1692,7 +1692,7 @@ export async function startChrome({
       profileName: resolvedProfileName, headless, forceProfileSync,
     });
     const foundEndpoint = found ? await browserWSEndpoint(found.port) : null;
-    if (found && foundEndpoint !== null) {
+    if (found && foundEndpoint) {
       reusable = found;
       normalizedPort = found.port;
     }
@@ -1714,7 +1714,7 @@ export async function startChrome({
       cleanupStaleManagedStateForPort(normalizedPort);
 
       const endpoint = await browserWSEndpoint(normalizedPort);
-      const occupied = endpoint === null && await isPortOccupied(normalizedPort);
+      const occupied = !endpoint && await isPortOccupied(normalizedPort);
       if (endpoint || occupied) {
         // A non-CDP listener is never an adoption candidate, even if stale
         // managed state happens to match this port and owner token.
