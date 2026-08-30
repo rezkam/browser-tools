@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
+import { createConnection } from 'node:net';
 import {
   accessSync,
   chmodSync,
@@ -19,6 +20,7 @@ import puppeteer from 'puppeteer-core';
 
 export const DEFAULT_PORT = 9222;
 export const CONNECT_PROBE_TIMEOUT_MS = 3000;
+export const PORT_OCCUPANCY_PROBE_TIMEOUT_MS = 250;
 export const CHROME_READY_TIMEOUT_MS = 15000;
 export const CHROME_READY_PROBE_TIMEOUT_MS = 250;
 export const DEFAULT_CHROME_BIN = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -386,6 +388,41 @@ export async function browserWSEndpoint(port = DEFAULT_PORT, timeoutMs = CONNECT
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Detect any local listener, not just a responsive CDP endpoint. A normal Chrome
+ * can occupy the preferred debugging port without exposing a usable
+ * /json/version response, and launching against that port otherwise fails only
+ * after the full readiness timeout. Unexpected probe errors are treated as
+ * occupied so an uncertain port is never handed to Chrome.
+ */
+function tcpListenerOnHost(port, host, timeoutMs) {
+  return new Promise((resolvePromise) => {
+    const socket = createConnection({ host, port });
+    let settled = false;
+    const finish = (occupied) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolvePromise(occupied);
+    };
+    socket.once('connect', () => finish(true));
+    socket.once('error', (error) => {
+      const code = error && typeof error === 'object' ? error.code : undefined;
+      finish(code !== 'ECONNREFUSED' && code !== 'EHOSTUNREACH' && code !== 'ENETUNREACH' && code !== 'EADDRNOTAVAIL');
+    });
+    socket.setTimeout(timeoutMs, () => finish(true));
+  });
+}
+
+export async function isPortOccupied(port = DEFAULT_PORT, timeoutMs = PORT_OCCUPANCY_PROBE_TIMEOUT_MS) {
+  const normalizedPort = normalizePort(port);
+  const [ipv4, ipv6] = await Promise.all([
+    tcpListenerOnHost(normalizedPort, '127.0.0.1', timeoutMs),
+    tcpListenerOnHost(normalizedPort, '::1', timeoutMs),
+  ]);
+  return ipv4 || ipv6;
 }
 
 export async function waitForChromeReady(
@@ -1570,6 +1607,7 @@ export async function findAvailablePort(startPort = DEFAULT_PORT, { maxAttempts 
     cleanupStaleManagedStateForPort(port);
     if (
       !(await browserWSEndpoint(port)) &&
+      !(await isPortOccupied(port)) &&
       !existsSync(stateFileForPort(port)) &&
       !existsSync(pidFileForPort(port))
     ) return port;
@@ -1653,7 +1691,9 @@ export async function startChrome({
     try {
       cleanupStaleManagedStateForPort(normalizedPort);
 
-      if (await browserWSEndpoint(normalizedPort)) {
+      const endpoint = await browserWSEndpoint(normalizedPort);
+      const occupied = endpoint === null && await isPortOccupied(normalizedPort);
+      if (endpoint || occupied) {
         const safety = managedBrowserSafetyForPort(normalizedPort);
         const state = readManagedStateForPort(normalizedPort);
         const reuse = managedBrowserReuseDecision({
@@ -1674,6 +1714,11 @@ export async function startChrome({
           };
         }
         if (!autoAllocatePort) {
+          if (!endpoint) {
+            throw new Error(
+              `Port :${normalizedPort} is already in use, but it is not a Browser Tools managed browser. Use a different --port or stop that listener manually.`,
+            );
+          }
           if (!safety.ok) {
             throw new Error(
               `Chrome DevTools is already listening on :${normalizedPort}, but it is not a Browser Tools managed browser (${safety.reason}). Use a different --port or stop that browser manually.`,
@@ -1842,6 +1887,14 @@ export async function startChrome({
       if (!ready) {
         stopChrome({ port: normalizedPort, ownerToken: effectiveOwnerToken, ignorePortLock: true });
         throw new Error(`Failed to connect to Chrome after ${Math.round(CHROME_READY_TIMEOUT_MS / 1000)}s`);
+      }
+      const launchedState = readManagedStateForPort(normalizedPort);
+      const launchedSafety = managedBrowserSafetyForPort(normalizedPort);
+      if (!launchedSafety.ok || Number(launchedState?.pid) !== Number(proc?.pid)) {
+        stopChrome({ port: normalizedPort, ownerToken: effectiveOwnerToken, ignorePortLock: true });
+        throw new Error(
+          `Chrome reported ready on :${normalizedPort}, but the responding process was not verified as the managed launch (${launchedSafety.reason || 'pid-mismatch'}).`,
+        );
       }
       return {
         status: 'started',
