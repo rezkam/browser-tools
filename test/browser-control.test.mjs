@@ -835,6 +835,8 @@ test('DevToolsActivePort ties a ready endpoint to the launched profile', () => {
     assert.equal(devToolsActivePortMatches(tmp, 'ws://127.0.0.1:9222/devtools/browser/managed'), true);
     assert.equal(devToolsActivePortMatches(tmp, 'ws://127.0.0.1:9222/devtools/browser/other'), false);
     assert.equal(devToolsActivePortMatches(tmp, 'ws://127.0.0.1:9223/devtools/browser/managed'), false);
+    writeFileSync(join(tmp, 'DevToolsActivePort'), '80\n/devtools/browser/default\n');
+    assert.equal(devToolsActivePortMatches(tmp, 'ws://127.0.0.1/devtools/browser/default'), true);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

@@ -430,7 +430,8 @@ export function devToolsActivePortMatches(userDataDir, endpoint) {
   try {
     const url = new URL(endpoint);
     const activePortFile = readFileSync(join(userDataDir, 'DevToolsActivePort'), 'utf8').trim().split(/\r?\n/);
-    return activePortFile[0] === url.port && activePortFile[1] === url.pathname;
+    const endpointPort = url.port || (url.protocol === 'ws:' ? '80' : url.protocol === 'wss:' ? '443' : '');
+    return activePortFile[0] === endpointPort && activePortFile[1] === url.pathname;
   } catch {
     return false;
   }
