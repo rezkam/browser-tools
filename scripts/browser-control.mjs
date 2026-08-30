@@ -410,7 +410,7 @@ function tcpListenerOnHost(port, host, timeoutMs) {
     socket.once('connect', () => finish(true));
     socket.once('error', (error) => {
       const code = error && typeof error === 'object' ? error.code : undefined;
-      finish(code !== 'ECONNREFUSED' && code !== 'EHOSTUNREACH' && code !== 'ENETUNREACH' && code !== 'EADDRNOTAVAIL');
+      finish(!['ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'EADDRNOTAVAIL', 'EAFNOSUPPORT', 'EPROTONOSUPPORT', 'ENOTSUP'].includes(code));
     });
     socket.setTimeout(timeoutMs, () => finish(true));
   });
@@ -425,18 +425,37 @@ export async function isPortOccupied(port = DEFAULT_PORT, timeoutMs = PORT_OCCUP
   return ipv4 || ipv6;
 }
 
-export async function waitForChromeReady(
+export function devToolsActivePortMatches(userDataDir, endpoint) {
+  if (!userDataDir || !endpoint) return false;
+  try {
+    const url = new URL(endpoint);
+    const activePortFile = readFileSync(join(userDataDir, 'DevToolsActivePort'), 'utf8').trim().split(/\r?\n/);
+    return activePortFile[0] === url.port && activePortFile[1] === url.pathname;
+  } catch {
+    return false;
+  }
+}
+
+export async function waitForChromeEndpoint(
   port = DEFAULT_PORT,
   { timeoutMs = CHROME_READY_TIMEOUT_MS, intervalMs = 250, probeTimeoutMs = CHROME_READY_PROBE_TIMEOUT_MS } = {},
 ) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const remainingMs = Math.max(1, deadline - Date.now());
-    if (await browserWSEndpoint(port, Math.min(probeTimeoutMs, remainingMs))) return true;
+    const endpoint = await browserWSEndpoint(port, Math.min(probeTimeoutMs, remainingMs));
+    if (endpoint) return endpoint;
     const sleepMs = Math.min(intervalMs, Math.max(0, deadline - Date.now()));
     if (sleepMs > 0) await sleep(sleepMs);
   }
-  return false;
+  return null;
+}
+
+export async function waitForChromeReady(
+  port = DEFAULT_PORT,
+  options = {},
+) {
+  return Boolean(await waitForChromeEndpoint(port, options));
 }
 
 export function profileCopyReady(profileName, profileDataDir = profileDataDirForPort()) {
@@ -1556,6 +1575,8 @@ export function launchChrome({ port = DEFAULT_PORT, profileName = null, userData
   const chromeBin = browserToolsChromeBin();
   const userAgent = headless ? headlessUserAgent(chromeBin) : null;
   const args = chromeLaunchArgs({ port: normalizedPort, profileName, managedToken, userDataDir: launchUserDataDir, headless, userAgent });
+  // A stale marker must not make a later launch appear to own a competing endpoint.
+  rmSync(join(launchUserDataDir, 'DevToolsActivePort'), { force: true });
   assertChromeBinaryLaunchable(chromeBin);
   const pidFile = pidFileForPort(normalizedPort);
   const stateFile = stateFileForPort(normalizedPort);
@@ -1670,7 +1691,8 @@ export async function startChrome({
       ownerToken: providedOwnerToken, includeGoogle, processes: candidates,
       profileName: resolvedProfileName, headless, forceProfileSync,
     });
-    if (found && await browserWSEndpoint(found.port)) {
+    const foundEndpoint = found ? await browserWSEndpoint(found.port) : null;
+    if (found && foundEndpoint !== null) {
       reusable = found;
       normalizedPort = found.port;
     }
@@ -1694,6 +1716,18 @@ export async function startChrome({
       const endpoint = await browserWSEndpoint(normalizedPort);
       const occupied = endpoint === null && await isPortOccupied(normalizedPort);
       if (endpoint || occupied) {
+        // A non-CDP listener is never an adoption candidate, even if stale
+        // managed state happens to match this port and owner token.
+        if (occupied) {
+          if (!autoAllocatePort) {
+            throw new Error(
+              `Port :${normalizedPort} is already in use, but it is not a Browser Tools managed browser. Use a different --port or stop that listener manually.`,
+            );
+          }
+          assertManagedBrowserCapacity();
+          normalizedPort = await findAvailablePort(normalizedPort + 1);
+          continue;
+        }
         const safety = managedBrowserSafetyForPort(normalizedPort);
         const state = readManagedStateForPort(normalizedPort);
         const reuse = managedBrowserReuseDecision({
@@ -1714,11 +1748,6 @@ export async function startChrome({
           };
         }
         if (!autoAllocatePort) {
-          if (!endpoint) {
-            throw new Error(
-              `Port :${normalizedPort} is already in use, but it is not a Browser Tools managed browser. Use a different --port or stop that listener manually.`,
-            );
-          }
           if (!safety.ok) {
             throw new Error(
               `Chrome DevTools is already listening on :${normalizedPort}, but it is not a Browser Tools managed browser (${safety.reason}). Use a different --port or stop that browser manually.`,
@@ -1883,14 +1912,14 @@ export async function startChrome({
           ownerTokenGenerated: false,
         };
       }
-      const ready = await waitForChromeReady(normalizedPort, { timeoutMs: CHROME_READY_TIMEOUT_MS });
-      if (!ready) {
+      const launchedEndpoint = await waitForChromeEndpoint(normalizedPort, { timeoutMs: CHROME_READY_TIMEOUT_MS });
+      if (!launchedEndpoint) {
         stopChrome({ port: normalizedPort, ownerToken: effectiveOwnerToken, ignorePortLock: true });
         throw new Error(`Failed to connect to Chrome after ${Math.round(CHROME_READY_TIMEOUT_MS / 1000)}s`);
       }
       const launchedState = readManagedStateForPort(normalizedPort);
       const launchedSafety = managedBrowserSafetyForPort(normalizedPort);
-      if (!launchedSafety.ok || Number(launchedState?.pid) !== Number(proc?.pid)) {
+      if (!launchedSafety.ok || Number(launchedState?.pid) !== Number(proc?.pid) || !devToolsActivePortMatches(launchedState?.userDataDir, launchedEndpoint)) {
         stopChrome({ port: normalizedPort, ownerToken: effectiveOwnerToken, ignorePortLock: true });
         throw new Error(
           `Chrome reported ready on :${normalizedPort}, but the responding process was not verified as the managed launch (${launchedSafety.reason || 'pid-mismatch'}).`,

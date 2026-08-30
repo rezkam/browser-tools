@@ -1064,9 +1064,15 @@ test('concurrent auto-allocated starts with one owner reuse a single browser', {
   mkdirSync(cacheDir);
   writeFileSync(fakeChrome, `#!/usr/bin/env node
 import { createServer } from 'node:http';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const portValue = process.argv.find((arg) => arg.startsWith('--remote-debugging-port='));
 const port = Number.parseInt(portValue?.split('=')[1] || '', 10);
+const userDataValue = process.argv.find((arg) => arg.startsWith('--user-data-dir='));
+const userDataDir = userDataValue?.slice('--user-data-dir='.length);
+mkdirSync(userDataDir, { recursive: true });
+writeFileSync(join(userDataDir, 'DevToolsActivePort'), String(port) + '\\n/devtools/browser/test\\n');
 const server = createServer((request, response) => {
   if (request.url === '/json/version') {
     response.writeHead(200, { 'content-type': 'application/json' });

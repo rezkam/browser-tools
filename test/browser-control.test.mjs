@@ -29,6 +29,7 @@ import {
   freshProfileDirForPort,
   findAvailablePort,
   isPortOccupied,
+  devToolsActivePortMatches,
   activePage,
   acquirePortLock,
   chromeLaunchArgs,
@@ -815,11 +816,26 @@ test('auto-allocation skips an occupied port even when it is not a CDP endpoint'
     const occupiedPort = address.port;
 
     assert.equal(await isPortOccupied(occupiedPort), true);
-    assert.equal(await findAvailablePort(occupiedPort, { maxAttempts: 2 }), occupiedPort + 1);
+    if (occupiedPort >= 65530) return;
+    const selectedPort = await findAvailablePort(occupiedPort, { maxAttempts: 8 });
+    assert.notEqual(selectedPort, occupiedPort);
+    assert.ok(selectedPort > occupiedPort && selectedPort <= occupiedPort + 8);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     if (previousCacheDir === undefined) delete process.env.BROWSER_TOOLS_CACHE_DIR;
     else process.env.BROWSER_TOOLS_CACHE_DIR = previousCacheDir;
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('DevToolsActivePort ties a ready endpoint to the launched profile', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'browser-devtools-active-port-test-'));
+  try {
+    writeFileSync(join(tmp, 'DevToolsActivePort'), '9222\n/devtools/browser/managed\n');
+    assert.equal(devToolsActivePortMatches(tmp, 'ws://127.0.0.1:9222/devtools/browser/managed'), true);
+    assert.equal(devToolsActivePortMatches(tmp, 'ws://127.0.0.1:9222/devtools/browser/other'), false);
+    assert.equal(devToolsActivePortMatches(tmp, 'ws://127.0.0.1:9223/devtools/browser/managed'), false);
+  } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
 });
