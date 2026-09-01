@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
+import { createConnection } from 'node:net';
 import {
   accessSync,
   chmodSync,
@@ -19,6 +20,7 @@ import puppeteer from 'puppeteer-core';
 
 export const DEFAULT_PORT = 9222;
 export const CONNECT_PROBE_TIMEOUT_MS = 3000;
+export const PORT_OCCUPANCY_PROBE_TIMEOUT_MS = 250;
 export const CHROME_READY_TIMEOUT_MS = 15000;
 export const CHROME_READY_PROBE_TIMEOUT_MS = 250;
 export const DEFAULT_CHROME_BIN = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -388,18 +390,73 @@ export async function browserWSEndpoint(port = DEFAULT_PORT, timeoutMs = CONNECT
   }
 }
 
-export async function waitForChromeReady(
+/**
+ * Detect any local listener, not just a responsive CDP endpoint. A normal Chrome
+ * can occupy the preferred debugging port without exposing a usable
+ * /json/version response, and launching against that port otherwise fails only
+ * after the full readiness timeout. Unexpected probe errors are treated as
+ * occupied so an uncertain port is never handed to Chrome.
+ */
+function tcpListenerOnHost(port, host, timeoutMs) {
+  return new Promise((resolvePromise) => {
+    const socket = createConnection({ host, port });
+    let settled = false;
+    const finish = (occupied) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolvePromise(occupied);
+    };
+    socket.once('connect', () => finish(true));
+    socket.once('error', (error) => {
+      const code = error && typeof error === 'object' ? error.code : undefined;
+      finish(!['ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'EADDRNOTAVAIL', 'EAFNOSUPPORT', 'EPROTONOSUPPORT', 'ENOTSUP'].includes(code));
+    });
+    socket.setTimeout(timeoutMs, () => finish(true));
+  });
+}
+
+export async function isPortOccupied(port = DEFAULT_PORT, timeoutMs = PORT_OCCUPANCY_PROBE_TIMEOUT_MS) {
+  const normalizedPort = normalizePort(port);
+  const [ipv4, ipv6] = await Promise.all([
+    tcpListenerOnHost(normalizedPort, '127.0.0.1', timeoutMs),
+    tcpListenerOnHost(normalizedPort, '::1', timeoutMs),
+  ]);
+  return ipv4 || ipv6;
+}
+
+export function devToolsActivePortMatches(userDataDir, endpoint) {
+  if (!userDataDir || !endpoint) return false;
+  try {
+    const url = new URL(endpoint);
+    const activePortFile = readFileSync(join(userDataDir, 'DevToolsActivePort'), 'utf8').trim().split(/\r?\n/);
+    const endpointPort = url.port || (url.protocol === 'ws:' ? '80' : url.protocol === 'wss:' ? '443' : '');
+    return activePortFile[0] === endpointPort && activePortFile[1] === url.pathname;
+  } catch {
+    return false;
+  }
+}
+
+export async function waitForChromeEndpoint(
   port = DEFAULT_PORT,
   { timeoutMs = CHROME_READY_TIMEOUT_MS, intervalMs = 250, probeTimeoutMs = CHROME_READY_PROBE_TIMEOUT_MS } = {},
 ) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const remainingMs = Math.max(1, deadline - Date.now());
-    if (await browserWSEndpoint(port, Math.min(probeTimeoutMs, remainingMs))) return true;
+    const endpoint = await browserWSEndpoint(port, Math.min(probeTimeoutMs, remainingMs));
+    if (endpoint) return endpoint;
     const sleepMs = Math.min(intervalMs, Math.max(0, deadline - Date.now()));
     if (sleepMs > 0) await sleep(sleepMs);
   }
-  return false;
+  return null;
+}
+
+export async function waitForChromeReady(
+  port = DEFAULT_PORT,
+  options = {},
+) {
+  return Boolean(await waitForChromeEndpoint(port, options));
 }
 
 export function profileCopyReady(profileName, profileDataDir = profileDataDirForPort()) {
@@ -1519,6 +1576,8 @@ export function launchChrome({ port = DEFAULT_PORT, profileName = null, userData
   const chromeBin = browserToolsChromeBin();
   const userAgent = headless ? headlessUserAgent(chromeBin) : null;
   const args = chromeLaunchArgs({ port: normalizedPort, profileName, managedToken, userDataDir: launchUserDataDir, headless, userAgent });
+  // A stale marker must not make a later launch appear to own a competing endpoint.
+  rmSync(join(launchUserDataDir, 'DevToolsActivePort'), { force: true });
   assertChromeBinaryLaunchable(chromeBin);
   const pidFile = pidFileForPort(normalizedPort);
   const stateFile = stateFileForPort(normalizedPort);
@@ -1570,6 +1629,7 @@ export async function findAvailablePort(startPort = DEFAULT_PORT, { maxAttempts 
     cleanupStaleManagedStateForPort(port);
     if (
       !(await browserWSEndpoint(port)) &&
+      !(await isPortOccupied(port)) &&
       !existsSync(stateFileForPort(port)) &&
       !existsSync(pidFileForPort(port))
     ) return port;
@@ -1632,7 +1692,8 @@ export async function startChrome({
       ownerToken: providedOwnerToken, includeGoogle, processes: candidates,
       profileName: resolvedProfileName, headless, forceProfileSync,
     });
-    if (found && await browserWSEndpoint(found.port)) {
+    const foundEndpoint = found ? await browserWSEndpoint(found.port) : null;
+    if (found && foundEndpoint) {
       reusable = found;
       normalizedPort = found.port;
     }
@@ -1653,7 +1714,21 @@ export async function startChrome({
     try {
       cleanupStaleManagedStateForPort(normalizedPort);
 
-      if (await browserWSEndpoint(normalizedPort)) {
+      const endpoint = await browserWSEndpoint(normalizedPort);
+      const occupied = !endpoint && await isPortOccupied(normalizedPort);
+      if (endpoint || occupied) {
+        // A non-CDP listener is never an adoption candidate, even if stale
+        // managed state happens to match this port and owner token.
+        if (occupied) {
+          if (!autoAllocatePort) {
+            throw new Error(
+              `Port :${normalizedPort} is already in use, but it is not a Browser Tools managed browser. Use a different --port or stop that listener manually.`,
+            );
+          }
+          assertManagedBrowserCapacity();
+          normalizedPort = await findAvailablePort(normalizedPort + 1);
+          continue;
+        }
         const safety = managedBrowserSafetyForPort(normalizedPort);
         const state = readManagedStateForPort(normalizedPort);
         const reuse = managedBrowserReuseDecision({
@@ -1838,10 +1913,18 @@ export async function startChrome({
           ownerTokenGenerated: false,
         };
       }
-      const ready = await waitForChromeReady(normalizedPort, { timeoutMs: CHROME_READY_TIMEOUT_MS });
-      if (!ready) {
+      const launchedEndpoint = await waitForChromeEndpoint(normalizedPort, { timeoutMs: CHROME_READY_TIMEOUT_MS });
+      if (!launchedEndpoint) {
         stopChrome({ port: normalizedPort, ownerToken: effectiveOwnerToken, ignorePortLock: true });
         throw new Error(`Failed to connect to Chrome after ${Math.round(CHROME_READY_TIMEOUT_MS / 1000)}s`);
+      }
+      const launchedState = readManagedStateForPort(normalizedPort);
+      const launchedSafety = managedBrowserSafetyForPort(normalizedPort);
+      if (!launchedSafety.ok || Number(launchedState?.pid) !== Number(proc?.pid) || !devToolsActivePortMatches(launchedState?.userDataDir, launchedEndpoint)) {
+        stopChrome({ port: normalizedPort, ownerToken: effectiveOwnerToken, ignorePortLock: true });
+        throw new Error(
+          `Chrome reported ready on :${normalizedPort}, but the responding process was not verified as the managed launch (${launchedSafety.reason || 'pid-mismatch'}).`,
+        );
       }
       return {
         status: 'started',

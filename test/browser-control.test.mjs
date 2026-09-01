@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -26,6 +27,9 @@ import {
   ensureBrowserToolsConfig,
   ensureChromeProfilesConfig,
   freshProfileDirForPort,
+  findAvailablePort,
+  isPortOccupied,
+  devToolsActivePortMatches,
   activePage,
   acquirePortLock,
   chromeLaunchArgs,
@@ -792,6 +796,47 @@ test('timestampedTmpPath and fileExists support screenshot and artifact behavior
 
     const screenshotPath = timestampedTmpPath('bad prefix / spaces', '.png');
     assert.match(screenshotPath, /bad-prefix---spaces-.*\.png$/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('auto-allocation skips an occupied port even when it is not a CDP endpoint', async () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'browser-port-occupancy-test-'));
+  const previousCacheDir = process.env.BROWSER_TOOLS_CACHE_DIR;
+  const server = createServer((socket) => socket.destroy());
+  try {
+    process.env.BROWSER_TOOLS_CACHE_DIR = tmp;
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    const occupiedPort = address.port;
+
+    assert.equal(await isPortOccupied(occupiedPort), true);
+    if (occupiedPort >= 65530) return;
+    const selectedPort = await findAvailablePort(occupiedPort, { maxAttempts: 8 });
+    assert.notEqual(selectedPort, occupiedPort);
+    assert.ok(selectedPort > occupiedPort && selectedPort <= occupiedPort + 8);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    if (previousCacheDir === undefined) delete process.env.BROWSER_TOOLS_CACHE_DIR;
+    else process.env.BROWSER_TOOLS_CACHE_DIR = previousCacheDir;
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('DevToolsActivePort ties a ready endpoint to the launched profile', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'browser-devtools-active-port-test-'));
+  try {
+    writeFileSync(join(tmp, 'DevToolsActivePort'), '9222\n/devtools/browser/managed\n');
+    assert.equal(devToolsActivePortMatches(tmp, 'ws://127.0.0.1:9222/devtools/browser/managed'), true);
+    assert.equal(devToolsActivePortMatches(tmp, 'ws://127.0.0.1:9222/devtools/browser/other'), false);
+    assert.equal(devToolsActivePortMatches(tmp, 'ws://127.0.0.1:9223/devtools/browser/managed'), false);
+    writeFileSync(join(tmp, 'DevToolsActivePort'), '80\n/devtools/browser/default\n');
+    assert.equal(devToolsActivePortMatches(tmp, 'ws://127.0.0.1/devtools/browser/default'), true);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
