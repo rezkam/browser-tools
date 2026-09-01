@@ -1,5 +1,12 @@
 # @rezkam/browser-tools
 
+## 1.0.4
+
+### Patch Changes
+
+- 2ef608b: Automatically reclaim managed Chrome sessions that have run for two hours after their recorded launcher exits. Record immutable launcher process identity to detect PID reuse, keep live launchers protected regardless of age, and run the fail-safe reap before enforcing the browser limit.
+- e453b80: Skip local ports occupied by non-CDP processes during automatic managed Chrome allocation, and verify that the process responding after launch is the managed Chrome that was started.
+
 ## 1.0.3
 
 ### Patch Changes
