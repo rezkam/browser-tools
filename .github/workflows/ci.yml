@@ -39,7 +39,8 @@ jobs:
       - name: Select direct Chrome executable on hosted macOS
         if: runner.os == 'macOS'
         run: |
-          ln -s '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' "$RUNNER_TEMP/browser-tools-chrome"
+          printf '%s\n' '#!/bin/sh' 'exec "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" "$@"' > "$RUNNER_TEMP/browser-tools-chrome"
+          chmod 700 "$RUNNER_TEMP/browser-tools-chrome"
           echo "BROWSER_TOOLS_CHROME_BIN=$RUNNER_TEMP/browser-tools-chrome" >> "$GITHUB_ENV"
 
       - name: Real sandboxed Chrome smoke
