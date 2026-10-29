@@ -399,7 +399,7 @@ test('launchChrome records the launcher process identity used by lease expiry', 
     const previousChromeBin = process.env.BROWSER_TOOLS_CHROME_BIN;
     process.env.BROWSER_TOOLS_CHROME_BIN = process.execPath;
     try {
-      launchChrome({ port: 9228, ownerToken: 'owner-token', ownerId: 'pipeline-task' });
+      launchChrome({ port: 9228, ownerToken: 'owner-token', ownerId: 'pipeline-task', headless: true });
       const state = JSON.parse(readFileSync(join(tmp, 'chrome-9228.json'), 'utf-8'));
       assert.equal(state.launchedByPid, process.pid);
       assert.match(
@@ -655,6 +655,18 @@ exec /bin/ps "$@"
 `, { mode: 0o755 });
     const raceModule = join(tmp, 'exit-after-sigterm-wait.mjs');
     writeFileSync(raceModule, `
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+const realRead = fs.readFileSync;
+let commandReads = 0;
+fs.readFileSync = (path, ...args) => {
+  if (path === '/proc/' + process.env.BROWSER_TOOLS_TEST_RACE_PID + '/cmdline') {
+    commandReads++;
+    if (commandReads > 1) { const error = new Error('gone'); error.code = 'ENOENT'; throw error; }
+  }
+  return realRead(path, ...args);
+};
+syncBuiltinESMExports();
 const targetPid = Number(process.env.BROWSER_TOOLS_TEST_RACE_PID);
 const realKill = process.kill;
 let sentTerm = false;
@@ -1112,8 +1124,8 @@ process.on('SIGINT', stop);
   });
 
   const results = await Promise.all([
-    startChrome({ port: 65420, autoAllocatePort: true, ownerToken, ownerId: 'concurrent-owner' }),
-    startChrome({ port: 65420, autoAllocatePort: true, ownerToken, ownerId: 'concurrent-owner' }),
+    startChrome({ port: 65420, autoAllocatePort: true, ownerToken, ownerId: 'concurrent-owner', headless: true }),
+    startChrome({ port: 65420, autoAllocatePort: true, ownerToken, ownerId: 'concurrent-owner', headless: true }),
   ]);
 
   assert.deepEqual(

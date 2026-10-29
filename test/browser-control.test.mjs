@@ -349,7 +349,8 @@ test('legacy Browser Tools profile config exports stay as compatibility aliases'
     }), 'utf-8');
 
     assert.equal(browserToolsProfilesConfigFile(configDir), browserToolsConfigFile(configDir));
-    assert.equal(CHROME_SRC.endsWith(join('Google', 'Chrome')), true);
+    assert.equal(typeof CHROME_SRC, 'string');
+    if (process.platform === 'darwin') assert.equal(CHROME_SRC.endsWith(join('Google', 'Chrome')), true);
     assert.equal(FRESH_PROFILE_DIR, join(CACHE_DIR, 'chrome-fresh'));
     assert.equal(PROFILE_SYNC_STATE_FILE, join(CACHE_DIR, 'chrome-profile-sync.json'));
 

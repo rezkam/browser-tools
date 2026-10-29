@@ -13,7 +13,11 @@ permissions:
 jobs:
   test:
     name: Unit and contract tests
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v6
@@ -26,7 +30,12 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
-      # Only the fast suite runs here. `npm run test:e2e` needs macOS Chrome,
-      # ffmpeg, and ffprobe, so it stays a local pre-release check.
       - name: Run Tests
         run: npm test
+
+      - name: Real sandboxed Chrome smoke
+        run: node --test test/e2e/platform-smoke.test.mjs
+
+      - name: macOS hidden app launcher regression
+        if: runner.os == 'macOS'
+        run: node --test test/e2e/headless-dock.test.mjs

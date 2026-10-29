@@ -1,7 +1,7 @@
 ---
 name: browser-tools
 description: "Control a sandboxed Chrome browser with a copied profile, including launch, stop, navigation, page JavaScript evaluation, screenshots, GIF recording and contact-sheet review, filtered HAR capture, agent-readable network extraction, raw CDP event recording, direct owner-protected CDP calls, DOM picking, page link extraction, article extraction, local profile configuration, and safe managed-browser ownership. Use this skill whenever the user asks to open or inspect a website, scrape a generic page, use a logged-in browser session, record or review browser interactions, capture XHR or Fetch traffic, create a HAR, inspect network requests, use Chrome DevTools Protocol, derive API calls from browser behavior, visually review a multi-step flow, take screenshots, evaluate browser JavaScript, manage Chrome profiles for agents, or control browser tabs. Do not use it for finance-specific data workflows, use the finance skill instead."
-compatibility: "Requires the @rezkam/browser-tools npm package (npm install -g @rezkam/browser-tools, or npx @rezkam/browser-tools), macOS Chrome, Node.js 20+, ffmpeg and ffprobe for GIF recording and review, and network access for browser automation."
+compatibility: "Requires the @rezkam/browser-tools npm package (npm install -g @rezkam/browser-tools, or npx @rezkam/browser-tools), macOS or Linux Chrome/Chromium, Node.js 20+, ffmpeg and ffprobe for GIF recording and review, and network access for browser automation."
 ---
 
 # Browser Tools

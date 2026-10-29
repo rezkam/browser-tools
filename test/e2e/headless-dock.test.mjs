@@ -35,7 +35,7 @@ function runBrowserTools(args, env, { allowFailure = false } = {}) {
   });
 }
 
-test('public headless app launch excludes Chrome from macOS Dock recents', { timeout: 30000 }, async () => {
+test('public headless app launch excludes Chrome from macOS Dock recents', { timeout: 30000, skip: process.platform !== 'darwin' }, async () => {
   const workspace = mkdtempSync(join(tmpdir(), 'browser-tools-headless-dock-e2e-'));
   const appDir = join(workspace, 'Fake Chrome.app');
   const chromeBin = join(appDir, 'Contents', 'MacOS', 'Fake Chrome');
