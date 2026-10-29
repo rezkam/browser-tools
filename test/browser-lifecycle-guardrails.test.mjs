@@ -16,6 +16,7 @@ import {
   STALE_BROWSER_AGE_MS,
   assertManagedBrowserCapacity,
   buildBrowserToolsConfig,
+  browserToolsChromeSourceDir,
   forcedKillStatus,
   isBrowserToolsUserDataDir,
   managedBrowserIdentityMatches,
@@ -1622,7 +1623,9 @@ test('reuse is refused when the existing browser is not the configuration that w
   const decide = (state, request) =>
     managedBrowserReuseDecision({ safety: { ok: true }, state, ownerToken: 'tok', includeGoogle: false, ...request });
 
-  const work = { ...base, profileName: 'Profile 1', headless: true };
+  const work = { ...base, profileName: 'Profile 1', profileSourceDir: browserToolsChromeSourceDir(), headless: true };
+  assert.equal(decide({ ...work, profileSourceDir: '/different-source' }, { profileName: 'Profile 1', headless: true }).reason, 'profile-source-mismatch');
+  assert.equal(decide({ ...work, profileSourceDir: null }, { profileName: 'Profile 1', headless: true }).reason, 'profile-source-mismatch', 'legacy profile state is not proof of source identity');
   assert.equal(decide(work, { profileName: 'Profile 1', headless: true }).ok, true, 'identical configuration reuses');
 
   assert.equal(decide(work, { profileName: 'Profile 2', headless: true }).reason, 'profile-mismatch');

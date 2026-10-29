@@ -1525,6 +1525,7 @@ export function managedBrowserReuseDecision({
   // Adopting a browser built from a different profile (or a fresh, signed-out clone) would run the
   // caller's automation against the wrong account.
   if ((state?.profileName || null) !== (profileName || null)) return fail('profile-mismatch');
+  if (profileName && (!state.profileSourceDir || resolve(state.profileSourceDir) !== resolve(browserToolsChromeSourceDir()))) return fail('profile-source-mismatch');
   // Headless is fixed at launch, so a windowed request cannot be served by a headless browser.
   if (Boolean(state?.headless) !== Boolean(headless)) return fail('headless-mismatch');
   return { ok: true, ownerId: ownership.ownerId, state };
@@ -1656,6 +1657,7 @@ export function launchChrome({ port = DEFAULT_PORT, profileName = null, userData
     pid: proc.pid,
     port: normalizedPort,
     profileName: profileName || null,
+    profileSourceDir: profileName ? browserToolsChromeSourceDir() : null,
     userDataDir: launchUserDataDir,
     headless: Boolean(headless),
     includeGoogle: Boolean(includeGoogle),
@@ -1814,6 +1816,9 @@ export async function startChrome({
           }
           // A configuration mismatch is not an ownership problem: the caller owns this browser, it
           // was just built differently. Say so, rather than sending them to look for a token.
+          if (reuse.reason === 'profile-source-mismatch') {
+            throw new Error('Managed Chrome profile source differs or was not recorded by this version. Stop it with the owner token and --clean, then restart for the requested source profile.');
+          }
           if (reuse.reason === 'profile-mismatch') {
             throw new Error(
               `Chrome on :${normalizedPort} was started with profile ${state?.profileName ? `"${state.profileName}"` : '(fresh, no profile)'}, but this start requested ${resolvedProfileName ? `"${resolvedProfileName}"` : '(fresh, no profile)'}. Reusing it would run against the wrong account. Stop it with scripts/stop.mjs --clean and start again, or pick a different --port.`,
