@@ -45,6 +45,21 @@ jobs:
       - name: Real sandboxed Chrome smoke
         run: node --test test/e2e/platform-smoke.test.mjs
 
+      - name: Diagnose hosted Chrome launch failure
+        if: failure() && runner.os == 'macOS'
+        run: |
+          node --input-type=module <<'NODE'
+          import { spawnSync } from 'node:child_process';
+          import { mkdtempSync, rmSync } from 'node:fs';
+          import { tmpdir } from 'node:os';
+          import { join } from 'node:path';
+          const root = mkdtempSync(join(tmpdir(), 'bt-ci-diagnostic-'));
+          try {
+            const result = spawnSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', ['--headless=new', '--no-first-run', '--user-data-dir=' + root, '--dump-dom', 'data:text/html,smoke'], { encoding: 'utf8', timeout: 10000 });
+            console.log({ status: result.status, signal: result.signal, error: result.error?.message, stdout: result.stdout, stderr: result.stderr });
+          } finally { rmSync(root, { recursive: true, force: true }); }
+          NODE
+
       - name: macOS hidden app launcher regression
         if: runner.os == 'macOS'
         run: node --test test/e2e/headless-dock.test.mjs
