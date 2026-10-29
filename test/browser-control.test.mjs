@@ -22,6 +22,7 @@ import {
   browserToolsConfigFile,
   browserToolsProfilesConfigFile,
   browserToolsRuntimeConfig,
+  browserToolsChromeBin,
   buildBrowserToolsConfig,
   buildChromeProfilesConfig,
   ensureBrowserToolsConfig,
@@ -233,7 +234,7 @@ test('private Browser Tools config discovers profiles, active profiles, and task
     assert.equal(config.aliases[workAccount], 'Profile 1');
     assert.equal(config.directories.chromeSourceDir, sourceDir);
     assert.match(config.directories.cacheDir, /pi-browser-tools$/);
-    assert.match(config.browser.chromeBin, /Google Chrome$/);
+    assert.equal(config.browser.chromeBin, browserToolsChromeBin());
 
     ensureBrowserToolsConfig({ configDir, sourceDir });
     assert.equal(existsSync(browserToolsConfigFile(configDir)), true);
