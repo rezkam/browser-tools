@@ -445,12 +445,14 @@ export function devToolsActivePortMatches(userDataDir, endpoint) {
 export async function launchedEndpointMatches({ port, endpoint, state, timeoutMs = 3000 }) {
   let url;
   try { url = new URL(endpoint); } catch { return false; }
-  if (url.protocol !== 'ws:' || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
+  if (url.hash || url.username || url.password || url.protocol !== 'ws:' || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
     || Number(url.port) !== Number(port) || !url.pathname.startsWith('/devtools/browser/')) return false;
   if (devToolsActivePortMatches(state?.userDataDir, endpoint)) return true;
   if (!state?.managedToken || !state?.userDataDir) return false;
   return new Promise((resolve) => {
-    const socket = new WebSocket(endpoint, { followRedirects: false, handshakeTimeout: timeoutMs, maxPayload: 1024 * 1024 });
+    let socket;
+    try { socket = new WebSocket(endpoint, { followRedirects: false, handshakeTimeout: timeoutMs, maxPayload: 1024 * 1024 }); }
+    catch { resolve(false); return; }
     let settled = false;
     const finish = (ok) => {
       if (settled) return;

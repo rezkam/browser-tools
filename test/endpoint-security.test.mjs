@@ -32,6 +32,10 @@ for (const mode of ['handshake-stall', 'cdp-stall', 'redirect']) {
   });
 }
 
+test('malformed WebSocket URL fails closed instead of rejecting launch cleanup', async () => {
+  assert.equal(await launchedEndpointMatches({ port: 19450, endpoint: 'ws://127.0.0.1:19450/devtools/browser/test#fragment', state: { managedToken: 'test', userDataDir: '/nonexistent' } }), false);
+});
+
 test('marker cannot bypass endpoint authority', async () => {
   const root = mkdtempSync(join(tmpdir(), 'bt-marker-'));
   try {

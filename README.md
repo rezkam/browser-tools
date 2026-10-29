@@ -50,7 +50,7 @@ Profile copying requires `rsync` and `sqlite3` (for default Google identity excl
 
 Snap confinement may deny the default cache or artifact paths. Set `BROWSER_TOOLS_CACHE_DIR` and `BROWSER_TOOLS_ARTIFACT_DIR` to private locations permitted by the installed snap; do not bypass confinement by automatically invoking internal snap executables. Snap launcher discovery is supported, but distro-specific confinement/refresh/keyring behavior requires host validation. Flatpak, Windows, encrypted login migration across users/hosts, and extension execution are not covered by the native compatibility guarantee.
 
-Local verification covers sandboxed Linux ARM64 Chromium navigation, eval, screenshots, ownership rejection, fixed-port endpoint identity and cleanup. CI runs unit/contracts and fresh-browser smoke on Linux and macOS. Real keyrings, headed Linux, snap confinement, and extensions require separate environment-specific verification. Puppeteer API and CLI contracts are retained; no Patchright migration is included.
+Local verification covers sandboxed Linux ARM64 Chromium navigation, eval, screenshots, ownership rejection, fixed-port endpoint identity and cleanup. CI runs unit/contracts and fresh-browser smoke on Linux and macOS (direct executable on hosted macOS); native NSWorkspace routing has a fixture contract, not a real desktop Dock/keychain validation. Real keyrings, headed Linux, snap confinement, and extensions require separate environment-specific verification. Puppeteer API and CLI contracts are retained; no Patchright migration is included.
 
 ## Quick start
 

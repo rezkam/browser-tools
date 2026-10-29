@@ -33,6 +33,15 @@ jobs:
       - name: Run Tests
         run: npm test
 
+      # NSWorkspace did not expose CDP on the hosted macOS runner.
+      # Exercise the supported direct-executable launch here; NSWorkspace routing
+      # is covered separately by the launcher contract fixture below.
+      - name: Select direct Chrome executable on hosted macOS
+        if: runner.os == 'macOS'
+        run: |
+          ln -s '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' "$RUNNER_TEMP/browser-tools-chrome"
+          echo "BROWSER_TOOLS_CHROME_BIN=$RUNNER_TEMP/browser-tools-chrome" >> "$GITHUB_ENV"
+
       - name: Real sandboxed Chrome smoke
         run: node --test test/e2e/platform-smoke.test.mjs
 
