@@ -48,12 +48,17 @@ test('public headless app launch excludes Chrome from macOS Dock recents', { tim
 
   writeFileSync(chromeBin, `#!/usr/bin/env node
 import { createServer } from 'node:http';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 if (process.argv.includes('--version')) {
   console.log('Google Chrome 151.0.0.0');
   process.exit(0);
 }
 const portArg = process.argv.find((arg) => arg.startsWith('--remote-debugging-port='));
 const port = Number.parseInt(portArg?.split('=')[1] || '', 10);
+const profile = process.argv.find(arg => arg.startsWith('--user-data-dir=')).slice(16);
+mkdirSync(profile, { recursive: true });
+writeFileSync(join(profile, 'DevToolsActivePort'), String(port) + '\\n/devtools/browser/test\\n');
 const server = createServer((request, response) => {
   if (request.url === '/json/version') {
     response.writeHead(200, { 'content-type': 'application/json' });

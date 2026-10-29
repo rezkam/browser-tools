@@ -46,7 +46,10 @@ function directoryExists(directory) {
   try { return statSync(directory).isDirectory(); } catch { return false; }
 }
 
-function snapChromium(binary) {
+function snapChromium(binary, env = process.env) {
+  if (!binary.includes('/')) {
+    binary = (env.PATH || '').split(':').filter(Boolean).map(dir => join(dir, binary)).find(executable) || binary;
+  }
   if (binary === '/snap/bin/chromium' || binary.includes('/snap/chromium/')) return true;
   try {
     const target = realpathSync(binary);
@@ -72,7 +75,7 @@ export function discoverChromeSourceDir({ chromeBin, platform = process.platform
   if (name.includes('chromium') || binary.includes('/snap/chromium/')) {
     const native = join(configRoot, 'chromium');
     const snap = join(home, 'snap', 'chromium', 'common', 'chromium');
-    if (snapChromium(binary)) return snap;
+    if (snapChromium(binary, env)) return snap;
     // Distro launchers can delegate to snap; stay within the Chromium family.
     return !directoryExists(native) && directoryExists(snap) ? snap : native;
   }

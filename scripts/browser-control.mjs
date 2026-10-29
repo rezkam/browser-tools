@@ -17,6 +17,7 @@ import { homedir, tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer-core';
+import WebSocket from 'ws';
 import { discoverChromeBinary, discoverChromeSourceDir, chromePlatformToken } from './browser-platform.mjs';
 
 export const DEFAULT_PORT = 9222;
@@ -381,7 +382,7 @@ export async function browserWSEndpoint(port = DEFAULT_PORT, timeoutMs = CONNECT
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(`http://localhost:${normalizedPort}/json/version`, { signal: controller.signal });
+    const res = await fetch(`http://127.0.0.1:${normalizedPort}/json/version`, { signal: controller.signal });
     if (!res.ok) return null;
     const data = await res.json();
     return data.webSocketDebuggerUrl ?? null;
@@ -441,24 +442,41 @@ export function devToolsActivePortMatches(userDataDir, endpoint) {
 
 // Fixed-port Chromium need not write DevToolsActivePort. A loopback URL alone is
 // not ownership proof: ask the endpoint for its actual browser launch arguments.
-export async function launchedEndpointMatches({ port, endpoint, state }) {
+export async function launchedEndpointMatches({ port, endpoint, state, timeoutMs = 3000 }) {
+  let url;
+  try { url = new URL(endpoint); } catch { return false; }
+  if (url.protocol !== 'ws:' || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
+    || Number(url.port) !== Number(port) || !url.pathname.startsWith('/devtools/browser/')) return false;
   if (devToolsActivePortMatches(state?.userDataDir, endpoint)) return true;
-  try {
-    const url = new URL(endpoint);
-    if (url.protocol !== 'ws:' || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
-      || Number(url.port) !== Number(port) || !/^\/devtools\/browser\/[A-Za-z0-9-]+$/.test(url.pathname)) return false;
-    const browser = await puppeteer.connect({ browserWSEndpoint: endpoint, protocolTimeout: 3000 });
-    try {
-      const session = await browser.target().createCDPSession();
-      const { arguments: args } = await session.send('Browser.getBrowserCommandLine');
-      return [
-        '--enable-automation',
-        `--remote-debugging-port=${port}`,
-        `--user-data-dir=${state.userDataDir}`,
-        `--pi-browser-tools-managed=${state.managedToken}`,
-      ].every((arg) => args.includes(arg));
-    } finally { browser.disconnect(); }
-  } catch { return false; }
+  if (!state?.managedToken || !state?.userDataDir) return false;
+  return new Promise((resolve) => {
+    const socket = new WebSocket(endpoint, { followRedirects: false, handshakeTimeout: timeoutMs, maxPayload: 1024 * 1024 });
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.terminate();
+      resolve(ok);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    socket.on('error', () => finish(false));
+    socket.on('close', () => finish(false));
+    socket.on('open', () => socket.send(JSON.stringify({ id: 1, method: 'Browser.getBrowserCommandLine' })));
+    socket.on('message', (data) => {
+      try {
+        const message = JSON.parse(data.toString());
+        if (message.id !== 1) return;
+        const args = message.result?.arguments;
+        finish(Array.isArray(args) && [
+          '--enable-automation',
+          '--remote-debugging-port=' + port,
+          '--user-data-dir=' + state.userDataDir,
+          '--pi-browser-tools-managed=' + state.managedToken,
+        ].every(arg => args.includes(arg)));
+      } catch { finish(false); }
+    });
+  });
 }
 
 export async function waitForChromeEndpoint(
@@ -845,6 +863,7 @@ export function syncChromeProfile(profileName, { force = false, port = DEFAULT_P
   const cachedMatches = cachedState
     && typeof cachedState.includeGoogle === 'boolean'
     && cachedState.includeGoogle === includeGoogle
+    && cachedState.sourceDir && resolve(cachedState.sourceDir) === resolve(sourceDir)
     && (includeGoogle || cachedState.googleStripOk === true);
   if (!force && cachedMatches && profileCopyReady(profileName, destDir)) {
     removeChromeProfileLocks(destDir);
@@ -1161,7 +1180,7 @@ export function managedBrowserIdentityMatches(expected, current) {
 export function verifyManagedChromePid(pid, { cacheDir = browserToolsCacheDir(), chromeBin = browserToolsChromeBin() } = {}) {
   const command = commandForPid(pid);
   if (!command) return null;
-  return managedChromeProcessFromCommand({ pid, command, cacheDir, chromeBin });
+  return managedChromeProcessFromCommand({ pid, command: command.replaceAll('\0', ' ').trim(), cacheDir, chromeBin });
 }
 
 // The live inventory of managed browsers. This reads the process table rather than the lifecycle
@@ -2199,8 +2218,10 @@ function readManagedState(stateFile) {
 function commandForPid(pid) {
   if (process.platform === 'linux') {
     try {
-      const command = readFileSync(`/proc/${pid}/cmdline`, 'utf8').replaceAll('\0', ' ').trim();
-      if (command) return command;
+      const command = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+      // Chromium rewrites its process title into argv[0], leaving only trailing NULs.
+      // Retain exact boundaries for ordinary argv; parse the rewritten title as ps does.
+      if (command) return command.split('\0').filter(Boolean).length === 1 ? command.replaceAll('\0', '').trim() : command;
       if (!processExists(pid)) return null;
       throw new Error(`Cannot inspect live browser process ${pid}`);
     } catch (error) {
@@ -2321,8 +2342,8 @@ export function managedChromeCommandSafety({ pid, port, state, command }) {
   const expectedToken = `--pi-browser-tools-managed=${state.managedToken}`;
   const expectedUserDataDir = `--user-data-dir=${state.userDataDir}`;
 
-  const hasArgument = (arg) => command.split('\0').some((value) => value === arg)
-    || command.includes(arg) && (command.indexOf(arg) === 0 || /\s/.test(command[command.indexOf(arg) - 1]))
+  const hasArgument = (arg) => command.includes('\0') ? command.split('\0').includes(arg)
+    : command.includes(arg) && (command.indexOf(arg) === 0 || /\s/.test(command[command.indexOf(arg) - 1]))
       && (command.indexOf(arg) + arg.length === command.length || /\s/.test(command[command.indexOf(arg) + arg.length]));
   if (!hasArgument(expectedDebugPort)) return { ok: false, reason: 'debug-port-mismatch', command };
   if (!hasArgument(expectedUserDataDir)) return { ok: false, reason: 'user-data-dir-mismatch', command };
@@ -2344,7 +2365,7 @@ export async function connectBrowser(port = DEFAULT_PORT, options = {}) {
     throw new Error(`Refusing to connect to Browser Tools Chrome on :${normalizedPort}: ${ownership.reason}`);
   }
   return puppeteer.connect({
-    browserURL: `http://localhost:${normalizedPort}`,
+    browserURL: `http://127.0.0.1:${normalizedPort}`,
     defaultViewport: null,
     ...puppeteerOptions,
   });
