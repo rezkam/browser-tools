@@ -2349,9 +2349,15 @@ export function managedChromeCommandSafety({ pid, port, state, command }) {
   const expectedToken = `--pi-browser-tools-managed=${state.managedToken}`;
   const expectedUserDataDir = `--user-data-dir=${state.userDataDir}`;
 
-  const hasArgument = (arg) => command.includes('\0') ? command.split('\0').includes(arg)
-    : command.includes(arg) && (command.indexOf(arg) === 0 || /\s/.test(command[command.indexOf(arg) - 1]))
-      && (command.indexOf(arg) + arg.length === command.length || /\s/.test(command[command.indexOf(arg) + arg.length]));
+  const argv = command.includes('\0') ? command.split('\0') : null;
+  const hasArgument = (arg) => {
+    if (argv) return argv.includes(arg);
+    const start = command.indexOf(arg);
+    if (start < 0) return false;
+    const end = start + arg.length;
+    return (start === 0 || /\s/.test(command[start - 1]))
+      && (end === command.length || /\s/.test(command[end]));
+  };
   if (!hasArgument(expectedDebugPort)) return { ok: false, reason: 'debug-port-mismatch', command };
   if (!hasArgument(expectedUserDataDir)) return { ok: false, reason: 'user-data-dir-mismatch', command };
   if (!hasArgument(expectedToken)) return { ok: false, reason: 'managed-token-mismatch', command };
