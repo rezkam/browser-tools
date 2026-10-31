@@ -34,11 +34,23 @@ Commands can also run without a global install:
 npx @rezkam/browser-tools <command>
 ```
 
-Browser Tools requires macOS, Google Chrome, and Node.js 20 or newer. GIF recording and review additionally require `ffmpeg` and `ffprobe`:
+Browser Tools requires macOS or Linux, installed Google Chrome or Chromium, and Node.js 20 or newer. GIF recording and review additionally require `ffmpeg` and `ffprobe`:
 
 ```bash
 brew install ffmpeg
 ```
+
+## Linux
+
+Linux discovers executable Chrome/Chromium launchers on PATH and common distro locations, including the normal snap launcher. Explicit `BROWSER_TOOLS_CHROME_BIN` or `browser.chromeBin` config wins; no browser or OS packages are installed automatically. Use `browser-tools start --headless` without a display; headed mode needs a working X11 or Wayland session. Chromium sandboxing stays enabled. Root, containers, or restrictive AppArmor/user-namespace policies may need operator setup, never an automatic `--no-sandbox` fallback.
+
+Profile discovery follows the selected browser family/channel under `${XDG_CONFIG_HOME:-~/.config}` (`google-chrome`, `google-chrome-beta`, `google-chrome-unstable`, or `chromium`); snap Chromium uses `~/snap/chromium/common/chromium`. Override with `BROWSER_TOOLS_CHROME_SOURCE_DIR` or `directories.chromeSourceDir`. `browser-tools config profiles` enumerates Local State into private local config.
+
+Profile copying requires `rsync` and `sqlite3` (for default Google identity exclusion). Close the source browser before copying for a consistent snapshot; copying a live SQLite database is not an atomic backup. Copies stay private and source locks are never removed. Run as the same OS user, browser family, and unlocked desktop secret-store session: copied cookies may not decrypt without the original Libsecret/KWallet keyring or D-Bus session. Browser Tools never switches to basic password storage or promises portable logins. Extensions depend on Chromium build/policy and are not guaranteed merely because their files were copied.
+
+Snap confinement may deny the default cache or artifact paths. Set `BROWSER_TOOLS_CACHE_DIR` and `BROWSER_TOOLS_ARTIFACT_DIR` to private locations permitted by the installed snap; do not bypass confinement by automatically invoking internal snap executables. Snap launcher discovery is supported, but distro-specific confinement/refresh/keyring behavior requires host validation. Flatpak, Windows, encrypted login migration across users/hosts, and extension execution are not covered by the native compatibility guarantee.
+
+Local verification covers sandboxed Linux ARM64 Chromium navigation, eval, screenshots, ownership rejection, fixed-port endpoint identity and cleanup. CI runs unit/contracts and fresh-browser smoke on Linux and macOS (direct executable on hosted macOS); native NSWorkspace routing has a fixture contract, not a real desktop Dock/keychain validation. Real keyrings, headed Linux, snap confinement, and extensions require separate environment-specific verification. Puppeteer API and CLI contracts are retained; no Patchright migration is included.
 
 ## Quick start
 

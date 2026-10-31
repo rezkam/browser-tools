@@ -36,10 +36,10 @@ Browser Tools stores private config under `~/.agents/browser-tools/config.json` 
 Out-of-box defaults:
 
 - Config: `~/.agents/browser-tools/config.json`
-- Chrome source profile directory: `~/Library/Application Support/Google/Chrome`
+- Chrome source profile directory: macOS `~/Library/Application Support/Google/Chrome`; Linux selected Chrome/Chromium family under `~/.config` (or absolute `XDG_CONFIG_HOME`), snap Chromium `~/snap/chromium/common/chromium`
 - Managed browser cache and copied profiles: `~/.cache/pi-browser-tools`
 - Artifact directory: `/tmp`
-- Chrome binary: `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`
+- Chrome binary: macOS `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`; Linux executable Chrome/Chromium discovery on PATH and common distro/snap launcher locations
 
 The config can override:
 

@@ -17,14 +17,16 @@ import { homedir, tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer-core';
+import WebSocket from 'ws';
+import { discoverChromeBinary, discoverChromeSourceDir, chromePlatformToken } from './browser-platform.mjs';
 
 export const DEFAULT_PORT = 9222;
 export const CONNECT_PROBE_TIMEOUT_MS = 3000;
 export const PORT_OCCUPANCY_PROBE_TIMEOUT_MS = 250;
 export const CHROME_READY_TIMEOUT_MS = 15000;
 export const CHROME_READY_PROBE_TIMEOUT_MS = 250;
-export const DEFAULT_CHROME_BIN = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-export const DEFAULT_CHROME_SRC = join(homedir(), 'Library', 'Application Support', 'Google', 'Chrome');
+export const DEFAULT_CHROME_BIN = discoverChromeBinary() || (process.platform === 'linux' ? 'google-chrome' : '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome');
+export const DEFAULT_CHROME_SRC = discoverChromeSourceDir({ chromeBin: DEFAULT_CHROME_BIN }) || join(homedir(), '.config', 'google-chrome');
 export const DEFAULT_CACHE_DIR = join(homedir(), '.cache', 'pi-browser-tools');
 export const DEFAULT_ARTIFACT_DIR = tmpdir();
 
@@ -84,11 +86,12 @@ export function expandHomePath(value) {
 export function browserToolsRuntimeConfig({ configDir = browserToolsConfigDir() } = {}) {
   const effectiveConfigDir = resolveBrowserToolsConfigDir(configDir);
   const config = safeReadJson(browserToolsConfigFile(effectiveConfigDir)) || {};
+  const chromeBin = expandHomePath(process.env.BROWSER_TOOLS_CHROME_BIN || config.browser?.chromeBin || config.chromeBin || discoverChromeBinary() || DEFAULT_CHROME_BIN);
   return {
     configDir: effectiveConfigDir,
     configFile: browserToolsConfigFile(effectiveConfigDir),
-    chromeBin: expandHomePath(process.env.BROWSER_TOOLS_CHROME_BIN || config.browser?.chromeBin || config.chromeBin || DEFAULT_CHROME_BIN),
-    chromeSourceDir: expandHomePath(process.env.BROWSER_TOOLS_CHROME_SOURCE_DIR || config.directories?.chromeSourceDir || config.sourceDir || DEFAULT_CHROME_SRC),
+    chromeBin,
+    chromeSourceDir: expandHomePath(process.env.BROWSER_TOOLS_CHROME_SOURCE_DIR || config.directories?.chromeSourceDir || config.sourceDir || discoverChromeSourceDir({ chromeBin }) || DEFAULT_CHROME_SRC),
     cacheDir: expandHomePath(process.env.BROWSER_TOOLS_CACHE_DIR || config.directories?.cacheDir || DEFAULT_CACHE_DIR),
     artifactDir: expandHomePath(process.env.BROWSER_TOOLS_ARTIFACT_DIR || config.directories?.artifactDir || DEFAULT_ARTIFACT_DIR),
     maxBrowsers: config.browser?.maxBrowsers ?? config.maxBrowsers ?? null,
@@ -379,7 +382,7 @@ export async function browserWSEndpoint(port = DEFAULT_PORT, timeoutMs = CONNECT
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(`http://localhost:${normalizedPort}/json/version`, { signal: controller.signal });
+    const res = await fetch(`http://127.0.0.1:${normalizedPort}/json/version`, { signal: controller.signal });
     if (!res.ok) return null;
     const data = await res.json();
     return data.webSocketDebuggerUrl ?? null;
@@ -435,6 +438,47 @@ export function devToolsActivePortMatches(userDataDir, endpoint) {
   } catch {
     return false;
   }
+}
+
+// Fixed-port Chromium need not write DevToolsActivePort. A loopback URL alone is
+// not ownership proof: ask the endpoint for its actual browser launch arguments.
+export async function launchedEndpointMatches({ port, endpoint, state, timeoutMs = 3000 }) {
+  let url;
+  try { url = new URL(endpoint); } catch { return false; }
+  if (url.hash || url.username || url.password || url.protocol !== 'ws:' || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
+    || Number(url.port) !== Number(port) || !url.pathname.startsWith('/devtools/browser/')) return false;
+  if (devToolsActivePortMatches(state?.userDataDir, endpoint)) return true;
+  if (!state?.managedToken || !state?.userDataDir) return false;
+  return new Promise((resolve) => {
+    let socket;
+    try { socket = new WebSocket(endpoint, { followRedirects: false, handshakeTimeout: timeoutMs, maxPayload: 1024 * 1024 }); }
+    catch { resolve(false); return; }
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.terminate();
+      resolve(ok);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    socket.on('error', () => finish(false));
+    socket.on('close', () => finish(false));
+    socket.on('open', () => socket.send(JSON.stringify({ id: 1, method: 'Browser.getBrowserCommandLine' })));
+    socket.on('message', (data) => {
+      try {
+        const message = JSON.parse(data.toString());
+        if (message.id !== 1) return;
+        const args = message.result?.arguments;
+        finish(Array.isArray(args) && [
+          '--enable-automation',
+          '--remote-debugging-port=' + port,
+          '--user-data-dir=' + state.userDataDir,
+          '--pi-browser-tools-managed=' + state.managedToken,
+        ].every(arg => args.includes(arg)));
+      } catch { finish(false); }
+    });
+  });
 }
 
 export async function waitForChromeEndpoint(
@@ -821,6 +865,7 @@ export function syncChromeProfile(profileName, { force = false, port = DEFAULT_P
   const cachedMatches = cachedState
     && typeof cachedState.includeGoogle === 'boolean'
     && cachedState.includeGoogle === includeGoogle
+    && cachedState.sourceDir && resolve(cachedState.sourceDir) === resolve(sourceDir)
     && (includeGoogle || cachedState.googleStripOk === true);
   if (!force && cachedMatches && profileCopyReady(profileName, destDir)) {
     removeChromeProfileLocks(destDir);
@@ -830,11 +875,12 @@ export function syncChromeProfile(profileName, { force = false, port = DEFAULT_P
   const commands = profileSyncRsyncCommands(profileName, { sourceDir, destDir, checkExists: true });
 
   rmSync(destDir, { recursive: true, force: true });
-  mkdirSync(destDir, { recursive: true });
+  mkdirSync(destDir, { recursive: true, mode: 0o700 });
+  chmodSync(destDir, 0o700);
   const results = [];
   const copiedItems = [];
   for (const command of commands) {
-    mkdirSync(command.dest, { recursive: true });
+    mkdirSync(command.dest, { recursive: true, mode: 0o700 });
     const result = spawnSync('rsync', command.args, { stdio: 'inherit' });
     if (result.error) throw result.error;
     if (result.signal) throw new Error(`rsync failed for ${command.item}: terminated by signal ${result.signal}`);
@@ -968,6 +1014,8 @@ export function chromeLaunchArgs({ port = DEFAULT_PORT, profileName = null, mana
   const args = [
     `--remote-debugging-port=${normalizedPort}`,
     `--user-data-dir=${launchUserDataDir}`,
+    '--remote-debugging-address=127.0.0.1',
+    '--enable-automation',
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-sync',
@@ -1000,7 +1048,7 @@ export function detectChromeMajorVersion(chromeBin = browserToolsChromeBin()) {
 // so this matches what a windowed macOS Chrome sends. It carries no machine-specific data.
 export function chromeUserAgentForMajor(major) {
   if (!Number.isInteger(major) || major < 1) return null;
-  return `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+  return `Mozilla/5.0 (${chromePlatformToken()}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
 }
 
 export function headlessUserAgent(chromeBin = browserToolsChromeBin()) {
@@ -1134,7 +1182,7 @@ export function managedBrowserIdentityMatches(expected, current) {
 export function verifyManagedChromePid(pid, { cacheDir = browserToolsCacheDir(), chromeBin = browserToolsChromeBin() } = {}) {
   const command = commandForPid(pid);
   if (!command) return null;
-  return managedChromeProcessFromCommand({ pid, command, cacheDir, chromeBin });
+  return managedChromeProcessFromCommand({ pid, command: command.replaceAll('\0', ' ').trim(), cacheDir, chromeBin });
 }
 
 // The live inventory of managed browsers. This reads the process table rather than the lifecycle
@@ -1477,6 +1525,7 @@ export function managedBrowserReuseDecision({
   // Adopting a browser built from a different profile (or a fresh, signed-out clone) would run the
   // caller's automation against the wrong account.
   if ((state?.profileName || null) !== (profileName || null)) return fail('profile-mismatch');
+  if (profileName && (!state.profileSourceDir || resolve(state.profileSourceDir) !== resolve(browserToolsChromeSourceDir()))) return fail('profile-source-mismatch');
   // Headless is fixed at launch, so a windowed request cannot be served by a headless browser.
   if (Boolean(state?.headless) !== Boolean(headless)) return fail('headless-mismatch');
   return { ok: true, ownerId: ownership.ownerId, state };
@@ -1579,6 +1628,11 @@ export function launchChrome({ port = DEFAULT_PORT, profileName = null, userData
   // A stale marker must not make a later launch appear to own a competing endpoint.
   rmSync(join(launchUserDataDir, 'DevToolsActivePort'), { force: true });
   assertChromeBinaryLaunchable(chromeBin);
+  if (process.platform === 'linux' && !headless && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
+    throw new Error('No Linux display found. Pass --headless (API: headless: true), or provide a working DISPLAY/WAYLAND_DISPLAY.');
+  }
+  mkdirSync(launchUserDataDir, { recursive: true, mode: 0o700 });
+  chmodSync(launchUserDataDir, 0o700);
   const pidFile = pidFileForPort(normalizedPort);
   const stateFile = stateFileForPort(normalizedPort);
   let proc = headless ? launchHeadlessChromeApp({ chromeBin, args }) : null;
@@ -1603,6 +1657,7 @@ export function launchChrome({ port = DEFAULT_PORT, profileName = null, userData
     pid: proc.pid,
     port: normalizedPort,
     profileName: profileName || null,
+    profileSourceDir: profileName ? browserToolsChromeSourceDir() : null,
     userDataDir: launchUserDataDir,
     headless: Boolean(headless),
     includeGoogle: Boolean(includeGoogle),
@@ -1761,6 +1816,9 @@ export async function startChrome({
           }
           // A configuration mismatch is not an ownership problem: the caller owns this browser, it
           // was just built differently. Say so, rather than sending them to look for a token.
+          if (reuse.reason === 'profile-source-mismatch') {
+            throw new Error('Managed Chrome profile source differs or was not recorded by this version. Stop it with the owner token and --clean, then restart for the requested source profile.');
+          }
           if (reuse.reason === 'profile-mismatch') {
             throw new Error(
               `Chrome on :${normalizedPort} was started with profile ${state?.profileName ? `"${state.profileName}"` : '(fresh, no profile)'}, but this start requested ${resolvedProfileName ? `"${resolvedProfileName}"` : '(fresh, no profile)'}. Reusing it would run against the wrong account. Stop it with scripts/stop.mjs --clean and start again, or pick a different --port.`,
@@ -1916,11 +1974,11 @@ export async function startChrome({
       const launchedEndpoint = await waitForChromeEndpoint(normalizedPort, { timeoutMs: CHROME_READY_TIMEOUT_MS });
       if (!launchedEndpoint) {
         stopChrome({ port: normalizedPort, ownerToken: effectiveOwnerToken, ignorePortLock: true });
-        throw new Error(`Failed to connect to Chrome after ${Math.round(CHROME_READY_TIMEOUT_MS / 1000)}s`);
+        throw new Error(`Failed to connect to Chrome after ${Math.round(CHROME_READY_TIMEOUT_MS / 1000)}s. Check the executable, Linux sandbox/user-namespace policy, display (or --headless), and profile permissions. Snap confinement may require BROWSER_TOOLS_CACHE_DIR and BROWSER_TOOLS_ARTIFACT_DIR inside its accessible directories. Browser Tools never disables the sandbox automatically.`);
       }
       const launchedState = readManagedStateForPort(normalizedPort);
       const launchedSafety = managedBrowserSafetyForPort(normalizedPort);
-      if (!launchedSafety.ok || Number(launchedState?.pid) !== Number(proc?.pid) || !devToolsActivePortMatches(launchedState?.userDataDir, launchedEndpoint)) {
+      if (!launchedSafety.ok || Number(launchedState?.pid) !== Number(proc?.pid) || !await launchedEndpointMatches({ port: normalizedPort, endpoint: launchedEndpoint, state: launchedState })) {
         stopChrome({ port: normalizedPort, ownerToken: effectiveOwnerToken, ignorePortLock: true });
         throw new Error(
           `Chrome reported ready on :${normalizedPort}, but the responding process was not verified as the managed launch (${launchedSafety.reason || 'pid-mismatch'}).`,
@@ -1987,7 +2045,7 @@ export function stopChrome({ port = DEFAULT_PORT, clean = false, dryRun = false,
     rmSync(paths.stateFile, { force: true });
     let cleaned = false;
     if (clean && isBrowserToolsUserDataDir(state?.userDataDir)) {
-      rmSync(state.userDataDir, { recursive: true, force: true });
+      rmSync(state.userDataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
       rmSync(profileSyncStateFileForPort(normalizedPort), { force: true });
       cleaned = true;
     }
@@ -2079,7 +2137,7 @@ export function stopChrome({ port = DEFAULT_PORT, clean = false, dryRun = false,
   rmSync(paths.stateFile, { force: true });
   let cleaned = false;
   if (clean && isBrowserToolsUserDataDir(state?.userDataDir)) {
-    rmSync(state.userDataDir, { recursive: true, force: true });
+    rmSync(state.userDataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     rmSync(profileSyncStateFileForPort(normalizedPort), { force: true });
     cleaned = true;
   }
@@ -2165,6 +2223,19 @@ function readManagedState(stateFile) {
 }
 
 function commandForPid(pid) {
+  if (process.platform === 'linux') {
+    try {
+      const command = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+      // Chromium rewrites its process title into argv[0], leaving only trailing NULs.
+      // Retain exact boundaries for ordinary argv; parse the rewritten title as ps does.
+      if (command) return command.split('\0').filter(Boolean).length === 1 ? command.replaceAll('\0', '').trim() : command;
+      if (!processExists(pid)) return null;
+      throw new Error(`Cannot inspect live browser process ${pid}`);
+    } catch (error) {
+      if (error.code === 'ENOENT' || error.code === 'ESRCH') return null;
+      throw error;
+    }
+  }
   const result = spawnSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf-8' });
   if (result.error || result.status !== 0) return null;
   const command = result.stdout.trim();
@@ -2194,6 +2265,12 @@ function processStartIdentity(pid) {
 }
 
 function processIsZombie(pid) {
+  if (process.platform === 'linux') {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+      return stat.slice(stat.lastIndexOf(')') + 2).startsWith('Z');
+    } catch { return false; }
+  }
   const result = spawnSync('ps', ['-p', String(pid), '-o', 'state='], { encoding: 'utf-8' });
   if (result.error || result.status !== 0) return false;
   return result.stdout.trim().startsWith('Z');
@@ -2272,9 +2349,18 @@ export function managedChromeCommandSafety({ pid, port, state, command }) {
   const expectedToken = `--pi-browser-tools-managed=${state.managedToken}`;
   const expectedUserDataDir = `--user-data-dir=${state.userDataDir}`;
 
-  if (!command.includes(expectedDebugPort)) return { ok: false, reason: 'debug-port-mismatch', command };
-  if (!command.includes(expectedUserDataDir)) return { ok: false, reason: 'user-data-dir-mismatch', command };
-  if (!command.includes(expectedToken)) return { ok: false, reason: 'managed-token-mismatch', command };
+  const argv = command.includes('\0') ? command.split('\0') : null;
+  const hasArgument = (arg) => {
+    if (argv) return argv.includes(arg);
+    const start = command.indexOf(arg);
+    if (start < 0) return false;
+    const end = start + arg.length;
+    return (start === 0 || /\s/.test(command[start - 1]))
+      && (end === command.length || /\s/.test(command[end]));
+  };
+  if (!hasArgument(expectedDebugPort)) return { ok: false, reason: 'debug-port-mismatch', command };
+  if (!hasArgument(expectedUserDataDir)) return { ok: false, reason: 'user-data-dir-mismatch', command };
+  if (!hasArgument(expectedToken)) return { ok: false, reason: 'managed-token-mismatch', command };
 
   return { ok: true, command };
 }
@@ -2292,7 +2378,7 @@ export async function connectBrowser(port = DEFAULT_PORT, options = {}) {
     throw new Error(`Refusing to connect to Browser Tools Chrome on :${normalizedPort}: ${ownership.reason}`);
   }
   return puppeteer.connect({
-    browserURL: `http://localhost:${normalizedPort}`,
+    browserURL: `http://127.0.0.1:${normalizedPort}`,
     defaultViewport: null,
     ...puppeteerOptions,
   });

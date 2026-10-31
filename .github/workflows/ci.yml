@@ -13,7 +13,11 @@ permissions:
 jobs:
   test:
     name: Unit and contract tests
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v6
@@ -26,7 +30,37 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
-      # Only the fast suite runs here. `npm run test:e2e` needs macOS Chrome,
-      # ffmpeg, and ffprobe, so it stays a local pre-release check.
       - name: Run Tests
         run: npm test
+
+      # NSWorkspace did not expose CDP on the hosted macOS runner.
+      # Exercise the supported direct-executable launch here; NSWorkspace routing
+      # is covered separately by the launcher contract fixture below.
+      - name: Select direct Chrome executable on hosted macOS
+        if: runner.os == 'macOS'
+        run: |
+          printf '%s\n' '#!/bin/sh' 'exec "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" "$@"' > "$RUNNER_TEMP/browser-tools-chrome"
+          chmod 700 "$RUNNER_TEMP/browser-tools-chrome"
+          echo "BROWSER_TOOLS_CHROME_BIN=$RUNNER_TEMP/browser-tools-chrome" >> "$GITHUB_ENV"
+
+      - name: Real sandboxed Chrome smoke
+        run: node --test test/e2e/platform-smoke.test.mjs
+
+      - name: Diagnose hosted Chrome launch failure
+        if: failure() && runner.os == 'macOS'
+        run: |
+          node --input-type=module <<'NODE'
+          import { spawnSync } from 'node:child_process';
+          import { mkdtempSync, rmSync } from 'node:fs';
+          import { tmpdir } from 'node:os';
+          import { join } from 'node:path';
+          const root = mkdtempSync(join(tmpdir(), 'bt-ci-diagnostic-'));
+          try {
+            const result = spawnSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', ['--headless=new', '--no-first-run', '--user-data-dir=' + root, '--dump-dom', 'data:text/html,smoke'], { encoding: 'utf8', timeout: 10000 });
+            console.log({ status: result.status, signal: result.signal, error: result.error?.message, stdout: result.stdout, stderr: result.stderr });
+          } finally { rmSync(root, { recursive: true, force: true }); }
+          NODE
+
+      - name: macOS hidden app launcher regression
+        if: runner.os == 'macOS'
+        run: node --test test/e2e/headless-dock.test.mjs

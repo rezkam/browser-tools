@@ -1,7 +1,7 @@
 ---
 name: browser-tools
 description: "Control a sandboxed Chrome browser with a copied profile, including launch, stop, navigation, page JavaScript evaluation, screenshots, GIF recording and contact-sheet review, filtered HAR capture, agent-readable network extraction, raw CDP event recording, direct owner-protected CDP calls, DOM picking, page link extraction, article extraction, local profile configuration, and safe managed-browser ownership. Use this skill whenever the user asks to open or inspect a website, scrape a generic page, use a logged-in browser session, record or review browser interactions, capture XHR or Fetch traffic, create a HAR, inspect network requests, use Chrome DevTools Protocol, derive API calls from browser behavior, visually review a multi-step flow, take screenshots, evaluate browser JavaScript, manage Chrome profiles for agents, or control browser tabs. Do not use it for finance-specific data workflows, use the finance skill instead."
-compatibility: "Requires the @rezkam/browser-tools npm package (npm install -g @rezkam/browser-tools, or npx @rezkam/browser-tools), macOS Chrome, Node.js 20+, ffmpeg and ffprobe for GIF recording and review, and network access for browser automation."
+compatibility: "Requires the @rezkam/browser-tools npm package (npm install -g @rezkam/browser-tools, or npx @rezkam/browser-tools), macOS or Linux Chrome/Chromium, Node.js 20+, ffmpeg and ffprobe for GIF recording and review, and network access for browser automation."
 ---
 
 # Browser Tools
@@ -177,14 +177,18 @@ Capture is tied to the active tab selected at `start`. If an interaction moves t
 Browser Tools works out of the box with these defaults:
 
 - Config: `~/.agents/browser-tools/config.json`
-- Chrome source profile directory: `~/Library/Application Support/Google/Chrome`
+- Chrome source profile directory: macOS `~/Library/Application Support/Google/Chrome`; Linux selected Chrome/Chromium family under `~/.config` (or absolute `XDG_CONFIG_HOME`), snap Chromium `~/snap/chromium/common/chromium`
 - Managed browser cache and copied profiles: `~/.cache/pi-browser-tools`
 - Artifact output directory: `/tmp`
-- Chrome binary: `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`
+- Chrome binary: macOS `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`; Linux executable Chrome/Chromium discovery on PATH and common distro/snap launcher locations
 
 `browser-tools config profiles` creates or refreshes config from Chrome `Local State`. The config can override `directories.chromeSourceDir`, `directories.cacheDir`, `directories.artifactDir`, `browser.chromeBin`, profile aliases, and task profile preferences. Environment variables take precedence for process-level overrides: `BROWSER_TOOLS_CONFIG_DIR`, `BROWSER_TOOLS_CACHE_DIR`, `BROWSER_TOOLS_ARTIFACT_DIR`, `BROWSER_TOOLS_CHROME_SOURCE_DIR`, and `BROWSER_TOOLS_CHROME_BIN`.
 
 Private profile labels, account names, active-profile cache, aliases, and task profile preferences belong in the local config, never in this repo.
+
+## Linux support
+
+Use `--headless` without DISPLAY/WAYLAND_DISPLAY. Keep Chromium sandboxing enabled; browser installation and host sandbox policy are operator responsibilities. Profile copying needs rsync/sqlite3 and the same user/browser/unlocked Libsecret or KWallet session; copying does not make encrypted cookies portable. Close the source browser before copying for consistency. Snap may need accessible cache/artifact overrides. See README Linux boundaries: Flatpak, keyring migration and extension execution require separate validation.
 
 ## Gotchas
 
