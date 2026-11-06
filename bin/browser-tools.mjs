@@ -23,6 +23,7 @@
  *   browser-tools scrape-page [--port <n>]
  *   browser-tools extract-article [--chars <n>] [--port <n>]
  *   browser-tools config profiles|active-profiles|task-profile ...
+ *   browser-tools serve [--max-tabs <n>] [--tab-seconds <n>] [--headless] [--proxy-server <url>] [--until-stdin-closes]
  */
 
 import { spawnSync } from 'node:child_process';
@@ -49,6 +50,7 @@ const COMMANDS = {
   'scrape-page': 'scrape-page.mjs',
   'extract-article': 'extract-article.mjs',
   config: 'config.mjs',
+  serve: 'serve.mjs',
 };
 
 function printUsage() {

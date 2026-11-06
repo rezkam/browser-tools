@@ -79,6 +79,7 @@ Use `--profile "<profile or alias>"` when an existing login is needed, `--sync` 
 | Visual recording | `record-gif`, `review-gif` | Record an interaction with pre-roll and post-roll frames, then create a contact sheet and metadata report |
 | HTTP capture | `record-har`, `extract-har` | Capture filtered active-tab traffic and derive a compact, non-executable request recipe |
 | Chrome DevTools Protocol | `record-cdp`, `cdp` | Record selected raw protocol events or send one guarded direct method call |
+| Shared tabs | `serve` | Run one lean Chrome for every client on the machine and lease its tabs, a bounded number at a time, each for a bounded time |
 
 Run `browser-tools --help` for the command list. Commands with detailed option references, such as `record-har`, `record-cdp`, and `review-gif`, also support command-level `--help`.
 
@@ -104,6 +105,31 @@ import { runBrowserResource } from '@rezkam/browser-tools/resource-helper.mjs';
 ```
 
 The root package export and `@rezkam/browser-tools/browser-control.mjs` both expose the browser lifecycle and connection module. The resource helper export provides the shared lifecycle for generic extractors.
+
+### Shared tabs
+
+`browser-tools serve` starts a tab broker and prints `{"url": ...}` once it listens. Chrome starts with the first lease, without extensions, component apps, a startup window or background networking.
+
+```js
+import { connectLeasedTab } from '@rezkam/browser-tools';
+import { leaseTab } from '@rezkam/browser-tools/tab-broker.mjs';
+
+const lease = await leaseTab(brokerUrl, { client: 'quotes' });
+const { browser, page } = await connectLeasedTab(lease);
+try {
+  await page.goto('https://example.com/');
+} finally {
+  await browser.disconnect();
+  lease.release();
+}
+```
+
+- At most `--max-tabs` tabs (default 4) are leased at once; later leases wait in order.
+- Each tab has a browser context of its own, so tabs share no cookies or storage, and downloads are refused.
+- A tab is taken back after `--tab-seconds` (default 120), and `lease.ended` then settles with `'expired'`. A client that exits gives its tab back, because a lease is an open HTTP request.
+- With `--proxy-server`, every request goes through the proxy, loopback addresses and WebRTC included.
+- `--until-stdin-closes` stops the broker, and its Chrome, when the parent holding its stdin goes away.
+- On Linux the broker logs Chrome's memory every 15 seconds as a `browser_memory` JSON line on stderr (proportional set size by process type), and each finished lease as a `tab_lease` line with its wait, hold time and how it ended.
 
 ## Development
 

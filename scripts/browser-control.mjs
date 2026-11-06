@@ -2384,6 +2384,29 @@ export async function connectBrowser(port = DEFAULT_PORT, options = {}) {
   });
 }
 
+/** Connects to a browser this process started itself, which needs no managed-browser ownership check. */
+export async function connectOwnBrowser(browserWSEndpoint, options = {}) {
+  return puppeteer.connect({ browserWSEndpoint, defaultViewport: null, ...options });
+}
+
+/** Connects to the one tab a tab broker leased (see tab-broker.mjs), seeing no other tab of the browser. */
+export async function connectLeasedTab({ cdpUrl, tabUrl }, options = {}) {
+  if (typeof cdpUrl !== 'string' || !cdpUrl.startsWith('ws://')) throw new Error('cdpUrl must be a ws:// address');
+  if (typeof tabUrl !== 'string' || !tabUrl.startsWith('about:blank#')) throw new Error('tabUrl must be a leased tab address');
+  const browser = await puppeteer.connect({
+    browserWSEndpoint: cdpUrl,
+    defaultViewport: null,
+    ...options,
+    targetFilter: (target) => target.url() === tabUrl,
+  });
+  const [page] = await browser.pages();
+  if (!page) {
+    await browser.disconnect();
+    throw new Error('The leased tab is gone');
+  }
+  return { browser, page };
+}
+
 export async function withBrowser(port, callback, options = {}) {
   const browser = await connectBrowser(port, options);
   try {
