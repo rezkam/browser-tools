@@ -74,6 +74,10 @@ import {
   writeChromeProfilesConfig,
 } from '../scripts/browser-control.mjs';
 
+// The tests name their own Chrome binary and source directory; the machine's choice must not override them.
+delete process.env.BROWSER_TOOLS_CHROME_BIN;
+delete process.env.BROWSER_TOOLS_CHROME_SOURCE_DIR;
+
 test('optionValue, hasFlag, parsePort, and normalizePort define the shared CLI surface', () => {
   const args = ['--profile', 'Work Profile', '--sync', '--port', '9333'];
 
