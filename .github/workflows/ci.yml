@@ -2,6 +2,10 @@ name: CI
 
 on:
   pull_request:
+  # A release goes out from main, so main gets the same platform checks as a pull request.
+  push:
+    branches:
+      - main
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
