@@ -42,6 +42,14 @@ test('native sandboxed browser: navigation, eval, screenshot, ownership, endpoin
     const ua = await page.evaluate(() => navigator.userAgent);
     assert.equal(ua.includes('HeadlessChrome'), false);
     if (process.platform === 'linux') assert.match(ua, /Linux/);
+    // Bot defenses reject a page that reports automation or headless Chrome's default 800x600 screen.
+    // A headless background tab reports a 0x0 window, so the window size is read from a page in its own window.
+    const windowed = await browser.newPage({ type: 'window', background: true });
+    const fingerprint = await windowed.evaluate(() => ({ webdriver: navigator.webdriver, screen: [screen.width, screen.height], outer: [outerWidth, outerHeight] }));
+    await windowed.close();
+    assert.equal(fingerprint.webdriver, false);
+    assert.ok(fingerprint.screen[0] > 800 && fingerprint.screen[1] > 600, `screen ${fingerprint.screen}`);
+    assert.ok(fingerprint.outer[0] > 800 && fingerprint.outer[0] <= fingerprint.screen[0] && fingerprint.outer[1] <= fingerprint.screen[1], `window ${fingerprint.outer} on ${fingerprint.screen}`);
     const screenshot = join(root, 'smoke.png');
     await page.screenshot({ path: screenshot });
     assert.ok(statSync(screenshot).size > 100);

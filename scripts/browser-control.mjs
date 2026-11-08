@@ -1027,7 +1027,9 @@ export function chromeLaunchArgs({ port = DEFAULT_PORT, profileName = null, mana
   ];
   // New headless runs the full browser (extensions and the copied profile still load) without opening
   // a window. Old --headless is a separate lightweight engine that ignores extensions, so keep =new.
-  if (headless) args.push('--headless=new');
+  // Bot defenses reject navigator.webdriver and headless Chrome's default 800x600 screen, so a
+  // headless launch hides the automation flag and reports a common desktop display.
+  if (headless) args.push('--headless=new', '--disable-blink-features=AutomationControlled', '--window-size=1920,1040', '--screen-info={1920x1080}');
   // A headless launch otherwise advertises a "HeadlessChrome" User-Agent. When the copied profile is
   // signed in to Google, that headless fingerprint trips Google's session-theft protection and logs the
   // source profile out, while a windowed launch (normal Chrome UA) does not. Present the normal UA so a
