@@ -80,6 +80,61 @@ test('CDP writer failure is captured by the owner rather than escaping an event 
   assert.deepEqual(session.eventNames(), []);
 });
 
+for (const failureAt of ['recording', 'draining', null]) {
+  test(`HAR ${failureAt ? `${failureAt} failure skips` : 'normal stop awaits'} an unfinished body read`, async () => {
+    const failure = new Error('fixture phase persistence failure');
+    let finishBody;
+    const body = new Promise((resolve, reject) => {
+      finishBody = () => failureAt ? reject(new Error('fixture session detached'))
+        : resolve({ body: 'fixture body', base64Encoded: false });
+    });
+    let bodyRequested = false;
+    const session = new EventEmitter();
+    session.send = async (method) => {
+      if (method !== 'Network.getResponseBody') return {};
+      bodyRequested = true;
+      return body;
+    };
+    let result;
+    let error;
+    const capture = runHarCapture({
+      session,
+      page: { url: () => 'about:blank', title: async () => 'Fixture' },
+      options: { ...parseHarCaptureOptions([]), idleMs: 0, drainTimeoutMs: 1 },
+      shouldStop: () => true,
+      onPhase(phase) {
+        if (phase === 'recording') {
+          session.emit('Network.requestWillBeSent', {
+            requestId: 'fixture', type: 'Fetch', timestamp: 1, wallTime: 1,
+            request: { method: 'GET', url: 'https://example.test/fixture', headers: {} },
+          });
+          session.emit('Network.responseReceived', {
+            requestId: 'fixture', timestamp: 2,
+            response: { status: 200, mimeType: 'text/plain', headers: {} },
+          });
+          session.emit('Network.loadingFinished', { requestId: 'fixture', timestamp: 3, encodedDataLength: 1 });
+        }
+        if (phase === failureAt) throw failure;
+      },
+    }).then((value) => { result = value; }, (reason) => { error = reason; });
+    try {
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(bodyRequested, true);
+      assert.deepEqual(session.eventNames(), []);
+      if (failureAt) assert.equal(error, failure, 'failure must reject before the body read settles');
+      else {
+        assert.equal(result, undefined, 'normal stop must retain unfinished response bodies');
+        assert.equal(error, undefined);
+      }
+    } finally {
+      finishBody();
+      await capture;
+    }
+    if (!failureAt) assert.equal(result.har.log.entries[0].response.content.text, 'fixture body');
+    else assert.equal(error, failure, 'a late body error must not replace the capture failure');
+  });
+}
+
 test('HAR redirect, success and failure states own drain membership', async () => {
   const collector = new HarCollector(parseHarCaptureOptions(['--capture', 'headers,timing']));
   const request = (requestId, timestamp, extra = {}) => collector.requestWillBeSent({

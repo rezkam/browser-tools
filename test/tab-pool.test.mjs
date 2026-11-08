@@ -175,6 +175,75 @@ test('a disposal failure retires the browser before granting another context', a
   assert.equal(nextBrowser.contexts.size, 1);
 });
 
+for (const recovery of ['browser exit', 'cleanup retry']) {
+  test(`failed disposal and stop recover capacity after ${recovery}`, async (t) => {
+    const firstBrowser = chrome(async (method) => {
+      if (method === 'Target.disposeBrowserContext') throw new Error('fixture disposal failure');
+    });
+    const nextBrowser = chrome();
+    const close = firstBrowser.close;
+    let stops = 0;
+    firstBrowser.close = async () => {
+      if (++stops === 1) throw new Error('fixture stop failure');
+      await close();
+    };
+    let launches = 0;
+    const { owner, add } = pool(t, async () => ++launches === 1 ? firstBrowser : nextBrowser);
+    const first = add();
+    const queued = add();
+    await until(() => first.granted);
+    first.cancel();
+    await until(() => stops === 1 && owner.running === firstBrowser);
+    assert.equal(queued.granted, false, 'unconfirmed disposal must retain capacity');
+    assert.equal(firstBrowser.contexts.size, 1);
+    const following = recovery === 'cleanup retry' ? add() : null;
+    if (recovery === 'browser exit') firstBrowser.exit();
+    await until(() => queued.granted);
+    assert.equal(launches, 2);
+    assert.equal(firstBrowser.contexts.size, 0);
+    if (following) {
+      assert.equal(following.granted, false, 'cleanup retry must retain FIFO order');
+      queued.cancel();
+      await until(() => following.granted);
+    }
+    await owner.close();
+    assert.deepEqual(owner.counts, { tabs: 0, waiting: 0 });
+  });
+}
+
+for (const outcome of ['completed', 'failed']) {
+  test(`a late ${outcome} stop cannot replace the browser launched after verified exit`, async (t) => {
+    const stop = deferred();
+    t.after(() => stop.resolve());
+    let stopping = false;
+    const firstBrowser = chrome(async (method) => {
+      if (method === 'Target.disposeBrowserContext') throw new Error('fixture disposal failure');
+    });
+    firstBrowser.close = async () => { stopping = true; await stop.promise; };
+    const nextBrowser = chrome();
+    let launches = 0;
+    const { owner, add } = pool(t, async () => ++launches === 1 ? firstBrowser : nextBrowser);
+    const first = add();
+    const queued = add();
+    await until(() => first.granted);
+    first.cancel();
+    await until(() => stopping);
+    firstBrowser.exit();
+    await until(() => queued.granted);
+    assert.equal(owner.running, nextBrowser);
+    if (outcome === 'failed') stop.reject(new Error('fixture late stop failure'));
+    else stop.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(owner.running, nextBrowser);
+    assert.equal(launches, 2);
+    queued.cancel();
+    await until(() => owner.counts.tabs === 0);
+    const retry = add();
+    await until(() => retry.granted);
+    assert.equal(launches, 2, 'the healthy replacement must be reused');
+  });
+}
+
 test('shutdown ends queued leases, is idempotent, and does not launch an idle browser', async (t) => {
   let launches = 0;
   const { owner, add } = pool(t, async () => { launches += 1; return chrome(); });

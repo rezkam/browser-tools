@@ -516,7 +516,7 @@ export async function runHarCapture({
     throw error;
   } finally {
     for (const [method, handler] of handlers) session.off(method, handler);
-    await Promise.allSettled([...pending]);
+    // On failure, let the session owner detach before waiting for stalled body reads.
   }
 }
 

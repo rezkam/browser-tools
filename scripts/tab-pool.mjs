@@ -17,15 +17,16 @@ export function createTabPool({ launchChrome, maxTabs, tabSeconds, proxyServer, 
   }
 
   function stopBrowser(running) {
-    const result = Promise.resolve().then(() => running.close()).then(() => {
-      browser = { phase: 'idle' };
+    const stopping = { phase: 'stopping', value: running };
+    stopping.result = Promise.resolve().then(() => running.close()).then(() => {
+      if (browser === stopping) browser = { phase: 'idle' };
     }, (error) => {
-      // Keep ownership on failure so a later stop can retry, never orphan the process.
-      browser = { phase: 'running', value: running };
+      // Retain a live owner for retry, but never resurrect a browser after its verified exit.
+      if (browser === stopping) browser = { phase: 'running', value: running };
       throw error;
     });
-    browser = { phase: 'stopping', result };
-    return result;
+    browser = stopping;
+    return stopping.result;
   }
 
   async function ensureChrome() {
@@ -44,11 +45,13 @@ export function createTabPool({ launchChrome, maxTabs, tabSeconds, proxyServer, 
       const result = Promise.resolve().then(launchChrome).then((running) => {
         browser = { phase: 'running', value: running };
         running.exited.then(({ code, signal }) => {
-          if (browser.phase === 'running' && browser.value === running) browser = { phase: 'idle' };
-          for (const lease of held) {
+          if (browser.value === running) browser = { phase: 'idle' };
+          for (const lease of [...held]) {
             if (lease.chrome !== running) continue;
             lease.error = `Chrome exited (${signal ?? code})`;
             end(lease, 'error');
+            // Verified exit settles failed cleanup, but allocations must still dispose late contexts.
+            if (lease.cleanup.phase !== 'pending') release(lease);
           }
         });
         return running;
@@ -62,7 +65,11 @@ export function createTabPool({ launchChrome, maxTabs, tabSeconds, proxyServer, 
   }
 
   function pump() {
-    while (service.phase === 'open' && held.size < maxTabs && waiting.length > 0) {
+    if (service.phase !== 'open') return;
+    for (const lease of held) {
+      if (lease.cleanup.phase === 'failed') void dispose(lease);
+    }
+    while (held.size < maxTabs && waiting.length > 0) {
       const lease = waiting.shift();
       lease.state = { phase: 'allocating' };
       held.add(lease);
@@ -74,21 +81,32 @@ export function createTabPool({ launchChrome, maxTabs, tabSeconds, proxyServer, 
     if (!lease.response.writableEnded && !lease.response.destroyed) lease.response.write(`${JSON.stringify(line)}\n`);
   }
 
+  function release(lease) {
+    lease.cleanup = { phase: 'disposed' };
+    if (held.delete(lease)) pump();
+  }
+
   function dispose(lease) {
-    lease.disposal ??= track(releases, (async () => {
+    if (lease.cleanup.phase === 'disposed') return Promise.resolve();
+    if (lease.cleanup.phase === 'disposing') return lease.cleanup.result;
+    const result = Promise.resolve().then(async () => {
+      if (lease.cleanup.phase === 'disposed') return;
       if (lease.context) {
         try {
           await lease.chrome.session.send('Target.disposeBrowserContext', { browserContextId: lease.context });
         } catch {
+          if (lease.cleanup.phase === 'disposed') return;
           // An unconfirmed disposal must not free capacity while its browser can still own the tab.
           if (browser.phase === 'running' && browser.value === lease.chrome) await stopBrowser(lease.chrome);
-          else if (browser.phase === 'stopping') await browser.result;
+          else if (browser.phase === 'stopping' && browser.value === lease.chrome) await browser.result;
         }
       }
-      held.delete(lease);
-      pump();
-    })());
-    return lease.disposal;
+    }).then(() => release(lease), (error) => {
+      if (lease.cleanup.phase !== 'disposed') lease.cleanup = { phase: 'failed', error };
+      throw error;
+    });
+    lease.cleanup = { phase: 'disposing', result };
+    return track(releases, result);
   }
 
   function end(lease, reason) {
@@ -165,7 +183,7 @@ export function createTabPool({ launchChrome, maxTabs, tabSeconds, proxyServer, 
     get counts() { return { tabs: held.size, waiting: waiting.length }; },
     add(response, client) {
       if (service.phase !== 'open') { response.writeHead(503).end(); return; }
-      const lease = { state: { phase: 'queued' }, client, asked: Date.now(), response };
+      const lease = { state: { phase: 'queued' }, cleanup: { phase: 'pending' }, client, asked: Date.now(), response };
       response.writeHead(200, { 'content-type': 'application/x-ndjson', 'cache-control': 'no-store' });
       response.flushHeaders();
       response.on('close', () => end(lease, 'released'));
