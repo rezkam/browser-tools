@@ -32,6 +32,30 @@ for (const mode of ['handshake-stall', 'cdp-stall', 'redirect']) {
   });
 }
 
+test('endpoint probe state remains separate from the managed launch identity', async (t) => {
+  const server = createServer();
+  const wss = new WebSocketServer({ server });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { wss.close(); server.close(); });
+  const port = server.address().port;
+  const state = { userDataDir: '/nonexistent/fixture-profile', managedToken: 'fixture-launch' };
+  wss.on('connection', (socket) => socket.on('message', (data) => {
+    const { id, method } = JSON.parse(data);
+    assert.equal(method, 'Browser.getBrowserCommandLine');
+    socket.send(JSON.stringify({ id, result: { arguments: [
+      '--enable-automation', `--remote-debugging-port=${port}`,
+      `--user-data-dir=${state.userDataDir}`, `--pi-browser-tools-managed=${state.managedToken}`,
+    ] } }));
+  }));
+  const probe = (identity) => launchedEndpointMatches({
+    port, endpoint: `ws://127.0.0.1:${port}/devtools/browser/fixture`, state: identity,
+  });
+  assert.equal(await probe(state), true);
+  assert.equal(await probe({ ...state, managedToken: 'other-launch' }), false);
+  assert.equal(await probe({ ...state, userDataDir: '/nonexistent/other-profile' }), false);
+  assert.equal(await probe(state), true, 'a fresh probe can retry after rejection');
+});
+
 test('malformed WebSocket URL fails closed instead of rejecting launch cleanup', async () => {
   assert.equal(await launchedEndpointMatches({ port: 19450, endpoint: 'ws://127.0.0.1:19450/devtools/browser/test#fragment', state: { managedToken: 'test', userDataDir: '/nonexistent' } }), false);
 });

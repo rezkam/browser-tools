@@ -97,7 +97,8 @@ export function installPicker() {
     new Promise((resolve, reject) => {
       const selections = [];
       const selectedEls = new Set();
-      let settled = false;
+      let state = 'selecting';
+      const active = () => state === 'selecting' || state === 'multi-selecting';
 
       const overlay = document.createElement('div');
       overlay.style.cssText =
@@ -130,20 +131,21 @@ export function installPicker() {
       };
 
       const finish = (result) => {
-        if (settled) return;
-        settled = true;
+        if (!active()) return;
+        state = result === null ? 'cancelled' : 'completed';
         cleanup();
         resolve(result);
       };
 
       const fail = (error) => {
-        if (settled) return;
-        settled = true;
+        if (!active()) return;
+        state = 'failed';
         cleanup();
         reject(new Error(`Picker failed to extract element info: ${errorMessage(error)}`));
       };
 
       const onMove = (e) => {
+        if (!active()) return;
         const el = document.elementFromPoint(e.clientX, e.clientY);
         if (!el || overlay.contains(el) || banner.contains(el)) return;
         const r = el.getBoundingClientRect();
@@ -156,7 +158,7 @@ export function installPicker() {
       };
 
       const onClick = (e) => {
-        if (banner.contains(e.target)) return;
+        if (!active() || banner.contains(e.target)) return;
         e.preventDefault();
         e.stopPropagation();
         const el = document.elementFromPoint(e.clientX, e.clientY);
@@ -168,10 +170,11 @@ export function installPicker() {
               selectedEls.add(el);
               el.style.outline = '3px solid #10b981';
               selections.push(info(el));
+              state = 'multi-selecting';
               refresh();
             }
           } else {
-            finish(selections.length > 0 ? selections : info(el));
+            finish(state === 'multi-selecting' ? selections : info(el));
           }
         } catch (error) {
           fail(error);
@@ -179,11 +182,12 @@ export function installPicker() {
       };
 
       const onKey = (e) => {
+        if (!active()) return;
         if (e.key === 'Escape') {
           e.preventDefault();
           finish(null);
         }
-        if (e.key === 'Enter' && selections.length > 0) {
+        if (e.key === 'Enter' && state === 'multi-selecting') {
           e.preventDefault();
           finish(selections);
         }

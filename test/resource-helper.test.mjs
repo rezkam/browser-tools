@@ -145,3 +145,29 @@ test('runBrowserResource disconnects when a generic extractor fails', async () =
 
   assert.deepEqual(calls, ['close', 'disconnect']);
 });
+
+for (const closePage of [false, true]) {
+  test(`page ownership returned by getPage overrides closePage=${closePage}`, async () => {
+    const calls = [];
+    const page = { isClosed: () => false, close: async () => calls.push('close') };
+    await runBrowserResource({
+      closePage,
+      connect: async () => ({ disconnect: () => calls.push('disconnect') }),
+      getPage: async () => ({ page, closePage: !closePage }),
+      run: async () => {},
+    });
+    assert.deepEqual(calls, closePage ? ['disconnect'] : ['close', 'disconnect']);
+  });
+}
+
+test('page acquisition failure disconnects and does not poison a later resource run', async () => {
+  const calls = [];
+  const connect = async () => ({ disconnect: () => calls.push('disconnect') });
+  await assert.rejects(runBrowserResource({
+    connect,
+    getPage: async () => { throw new Error('fixture page failure'); },
+    run: async () => assert.fail('must not run without a page'),
+  }), /fixture page failure/);
+  assert.equal(await runBrowserResource({ connect, run: async () => 'retried' }), 'retried');
+  assert.deepEqual(calls, ['disconnect', 'disconnect']);
+});

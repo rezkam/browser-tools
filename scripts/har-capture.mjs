@@ -21,6 +21,7 @@ import {
   writePrivateJson,
 } from './cdp-common.mjs';
 import { parseBoundedNumber } from './gif-recorder.mjs';
+import { createRecordingLifecycle } from './recording-lifecycle.mjs';
 
 const { version: BROWSER_TOOLS_VERSION } = createRequire(import.meta.url)('../package.json');
 
@@ -161,6 +162,10 @@ export function parseHarCaptureOptions(args) {
   };
 }
 
+function requestInFlight(entry) {
+  return entry && ['requesting', 'responding'].includes(entry.state);
+}
+
 export class HarCollector {
   constructor(options, { pageId = 'page_0', pageUrl = '', pageTitle = '' } = {}) {
     this.options = options;
@@ -175,7 +180,6 @@ export class HarCollector {
     this.responseExtraIndexes = new Map();
     this.pendingRequestExtra = new Map();
     this.pendingResponseExtra = new Map();
-    this.activeRequestIds = new Set();
     this.lastActivityAt = Date.now();
   }
 
@@ -204,7 +208,8 @@ export class HarCollector {
     this.requestIndexes.set(event.requestId, entryIndex + 1);
     if (event.redirectResponse) {
       const redirected = this.currentByRequestId.get(event.requestId);
-      if (redirected) {
+      if (requestInFlight(redirected)) {
+        redirected.state = 'redirected';
         redirected.response = event.redirectResponse;
         redirected.responseTimestamp = event.timestamp;
         redirected.finishedTimestamp = event.timestamp;
@@ -214,12 +219,12 @@ export class HarCollector {
 
     if (!this.requestMatches(event)) {
       this.currentByRequestId.delete(event.requestId);
-      this.activeRequestIds.delete(event.requestId);
       return;
     }
 
     const requestEntries = this.entriesByRequestId.get(event.requestId) || [];
     const entry = {
+      state: 'requesting',
       requestId: event.requestId,
       request: event.request,
       resourceType: event.type || 'Other',
@@ -240,7 +245,6 @@ export class HarCollector {
     this.entriesByRequestId.set(event.requestId, requestEntries);
     this.entries.push(entry);
     this.currentByRequestId.set(event.requestId, entry);
-    this.activeRequestIds.add(event.requestId);
   }
 
   requestWillBeSentExtraInfo(event) {
@@ -270,7 +274,8 @@ export class HarCollector {
   responseReceived(event) {
     this.lastActivityAt = Date.now();
     const entry = this.currentByRequestId.get(event.requestId);
-    if (!entry) return;
+    if (!requestInFlight(entry)) return;
+    entry.state = 'responding';
     entry.response = event.response;
     entry.responseTimestamp = event.timestamp;
     if (event.type) entry.resourceType = event.type;
@@ -284,8 +289,8 @@ export class HarCollector {
   async loadingFinished(event, session) {
     this.lastActivityAt = Date.now();
     const entry = this.currentByRequestId.get(event.requestId);
-    this.activeRequestIds.delete(event.requestId);
-    if (!entry) return;
+    if (!requestInFlight(entry)) return;
+    entry.state = 'completed';
     entry.finishedTimestamp = event.timestamp;
     entry.encodedDataLength = Number(event.encodedDataLength || 0);
     if (!this.options.capture.includes('bodies') || !this.responseMatches(entry)) return;
@@ -299,8 +304,8 @@ export class HarCollector {
   loadingFailed(event) {
     this.lastActivityAt = Date.now();
     const entry = this.currentByRequestId.get(event.requestId);
-    this.activeRequestIds.delete(event.requestId);
-    if (!entry) return;
+    if (!requestInFlight(entry)) return;
+    entry.state = 'failed';
     entry.finishedTimestamp = event.timestamp;
     entry.failed = {
       errorText: event.errorText,
@@ -312,7 +317,8 @@ export class HarCollector {
   async waitForDrain({ idleMs = this.options.idleMs, timeoutMs = this.options.drainTimeoutMs } = {}) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      if (this.activeRequestIds.size === 0 && Date.now() - this.lastActivityAt >= idleMs) return true;
+      const active = [...this.currentByRequestId.values()].some(requestInFlight);
+      if (!active && Date.now() - this.lastActivityAt >= idleMs) return true;
       await sleep(50);
     }
     return false;
@@ -450,34 +456,68 @@ export async function runHarCapture({
     pageUrl: page.url(),
     pageTitle: await page.title().catch(() => ''),
   });
+  const lifecycle = createRecordingLifecycle('har');
   const pending = new Set();
-  const track = (promise) => {
-    pending.add(promise);
-    promise.finally(() => pending.delete(promise));
+  const fail = (error) => {
+    if (lifecycle.phase !== 'failed') lifecycle.transition('failed', { error });
   };
+  const assertHealthy = () => {
+    if (lifecycle.phase === 'failed') throw lifecycle.snapshot().error;
+  };
+  const handlers = new Map();
+  const subscribe = (method, handle) => {
+    const listener = (event) => {
+      if (['completed', 'failed'].includes(lifecycle.phase)) return;
+      try {
+        const task = Promise.resolve(handle(event));
+        pending.add(task);
+        task.then(() => pending.delete(task), (error) => { pending.delete(task); fail(error); });
+      } catch (error) {
+        fail(error);
+      }
+    };
+    handlers.set(method, listener);
+    session.on(method, listener);
+  };
+  subscribe('Network.requestWillBeSent', (event) => collector.requestWillBeSent(event));
+  subscribe('Network.requestWillBeSentExtraInfo', (event) => collector.requestWillBeSentExtraInfo(event));
+  subscribe('Network.responseReceived', (event) => collector.responseReceived(event));
+  subscribe('Network.responseReceivedExtraInfo', (event) => collector.responseReceivedExtraInfo(event));
+  subscribe('Network.requestServedFromCache', (event) => collector.requestServedFromCache(event));
+  subscribe('Network.loadingFinished', (event) => collector.loadingFinished(event, session));
+  subscribe('Network.loadingFailed', (event) => collector.loadingFailed(event));
 
-  session.on('Network.requestWillBeSent', (event) => collector.requestWillBeSent(event));
-  session.on('Network.requestWillBeSentExtraInfo', (event) => collector.requestWillBeSentExtraInfo(event));
-  session.on('Network.responseReceived', (event) => collector.responseReceived(event));
-  session.on('Network.responseReceivedExtraInfo', (event) => collector.responseReceivedExtraInfo(event));
-  session.on('Network.requestServedFromCache', (event) => collector.requestServedFromCache(event));
-  session.on('Network.loadingFinished', (event) => track(collector.loadingFinished(event, session)));
-  session.on('Network.loadingFailed', (event) => collector.loadingFailed(event));
+  try {
+    await session.send('Network.enable', {
+      maxTotalBufferSize: Math.max(options.maxBodyBytes * 4, 4 * 1024 * 1024),
+      maxResourceBufferSize: options.maxBodyBytes,
+      maxPostDataSize: options.maxBodyBytes,
+    });
+    assertHealthy();
+    lifecycle.transition('recording');
+    await onPhase('recording');
 
-  await session.send('Network.enable', {
-    maxTotalBufferSize: Math.max(options.maxBodyBytes * 4, 4 * 1024 * 1024),
-    maxResourceBufferSize: options.maxBodyBytes,
-    maxPostDataSize: options.maxBodyBytes,
-  });
-  await onPhase('recording');
-
-  const deadline = Date.now() + options.maxDurationSeconds * 1000;
-  while (!shouldStop() && Date.now() < deadline) await sleep(100);
-  const reason = shouldStop() ? 'requested' : 'max-duration';
-  await onPhase('draining', reason);
-  await collector.waitForDrain();
-  await Promise.allSettled([...pending]);
-  return { reason, har: collector.build(), eventCount: collector.entries.length };
+    const deadline = Date.now() + options.maxDurationSeconds * 1000;
+    while (lifecycle.phase === 'recording' && !shouldStop() && Date.now() < deadline) await sleep(100);
+    assertHealthy();
+    const reason = shouldStop() ? 'requested' : 'max-duration';
+    lifecycle.transition('draining', { reason });
+    await onPhase('draining', reason);
+    await collector.waitForDrain();
+    // Freeze the event stream before awaiting body reads, so the final set cannot grow.
+    for (const [method, handler] of handlers) session.off(method, handler);
+    await Promise.allSettled([...pending]);
+    assertHealthy();
+    const har = collector.build();
+    lifecycle.transition('completed');
+    return { reason, har, eventCount: collector.entries.length };
+  } catch (error) {
+    fail(error);
+    throw error;
+  } finally {
+    for (const [method, handler] of handlers) session.off(method, handler);
+    // On failure, let the session owner detach before waiting for stalled body reads.
+  }
 }
 
 export function writeHar(file, har) {

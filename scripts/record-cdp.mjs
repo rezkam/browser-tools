@@ -20,6 +20,7 @@ import {
   requiredOptionValue,
 } from './browser-control.mjs';
 import { openPrivateFile, privateOutputPath, withPageCdpSession } from './cdp-common.mjs';
+import { createRecordingLifecycle } from './recording-lifecycle.mjs';
 import {
   CDP_CAPTURE_STOP_TIMEOUT_MS,
   assertCdpRecordingOwner,
@@ -173,23 +174,18 @@ async function runWorker(args) {
   const output = requiredOptionValue(args, '--output', null);
   const options = decodeOptions(requiredOptionValue(args, '--worker-options', null));
   const startedAt = new Date().toISOString();
-  let state = {
+  const metadata = {
     managedBy: 'browser-tools-cdp-recorder',
     kind: CAPTURE_KIND,
     pid: process.pid,
     port,
     output,
     ownerTokenHash: ownerTokenHash(ownerToken),
-    status: 'starting',
-    phase: 'starting',
     startedAt,
     options,
   };
-  const update = (changes) => {
-    state = { ...state, ...changes };
-    updateCdpRecordingState(CAPTURE_KIND, port, state);
-  };
-  update({});
+  const lifecycle = createRecordingLifecycle(CAPTURE_KIND, metadata,
+    (state) => updateCdpRecordingState(CAPTURE_KIND, port, state));
 
   let outputFd = null;
   try {
@@ -200,31 +196,15 @@ async function runWorker(args) {
         options,
         shouldStop: () => existsSync(cdpRecordingStopFile(CAPTURE_KIND, port)),
         writeEvent: (event) => writeSync(outputFd, `${JSON.stringify(event)}\n`),
-        onPhase: (phase, reason = null) => update({
-          status: phase === 'recording' ? 'recording' : state.status,
-          phase,
-          reason: reason ?? state.reason,
-          readyAt: phase === 'recording' ? new Date().toISOString() : state.readyAt,
-        }),
+        onPhase: (phase, reason) => lifecycle.transition(phase, reason ? { reason } : {}),
       });
     });
     closeSync(outputFd);
     outputFd = null;
-    update({
-      status: 'completed',
-      phase: 'completed',
-      reason: result.reason,
-      eventCount: result.eventCount,
-      completedAt: new Date().toISOString(),
-    });
+    lifecycle.transition('completed', { reason: result.reason, eventCount: result.eventCount });
   } catch (error) {
     if (outputFd !== null) closeSync(outputFd);
-    update({
-      status: 'failed',
-      phase: 'failed',
-      error: error.message,
-      completedAt: new Date().toISOString(),
-    });
+    lifecycle.transition('failed', { error: error.message });
     throw error;
   }
 }
