@@ -403,10 +403,10 @@ export async function browserWSEndpoint(port = DEFAULT_PORT, timeoutMs = CONNECT
 function tcpListenerOnHost(port, host, timeoutMs) {
   return new Promise((resolvePromise) => {
     const socket = createConnection({ host, port });
-    let settled = false;
+    let state = { phase: 'connecting' };
     const finish = (occupied) => {
-      if (settled) return;
-      settled = true;
+      if (state.phase === 'settled') return;
+      state = { phase: 'settled', occupied };
       socket.destroy();
       resolvePromise(occupied);
     };
@@ -453,10 +453,10 @@ export async function launchedEndpointMatches({ port, endpoint, state, timeoutMs
     let socket;
     try { socket = new WebSocket(endpoint, { followRedirects: false, handshakeTimeout: timeoutMs, maxPayload: 1024 * 1024 }); }
     catch { resolve(false); return; }
-    let settled = false;
+    let probeState = { phase: 'connecting' };
     const finish = (ok) => {
-      if (settled) return;
-      settled = true;
+      if (probeState.phase === 'settled') return;
+      probeState = { phase: 'settled', ok };
       clearTimeout(timer);
       socket.terminate();
       resolve(ok);
@@ -464,8 +464,13 @@ export async function launchedEndpointMatches({ port, endpoint, state, timeoutMs
     const timer = setTimeout(() => finish(false), timeoutMs);
     socket.on('error', () => finish(false));
     socket.on('close', () => finish(false));
-    socket.on('open', () => socket.send(JSON.stringify({ id: 1, method: 'Browser.getBrowserCommandLine' })));
+    socket.on('open', () => {
+      if (probeState.phase !== 'connecting') return;
+      probeState = { phase: 'checking' };
+      socket.send(JSON.stringify({ id: 1, method: 'Browser.getBrowserCommandLine' }));
+    });
     socket.on('message', (data) => {
+      if (probeState.phase !== 'checking') return;
       try {
         const message = JSON.parse(data.toString());
         if (message.id !== 1) return;

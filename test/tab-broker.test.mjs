@@ -27,6 +27,25 @@ function settled(promise) {
   return Promise.race([promise.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 300))]);
 }
 
+test('failed Chrome spawn rejects the lease, permits retry, and can shut down', { timeout: 3000 }, async (t) => {
+  const served = await serveTabs({ chromeBin: '/nonexistent/fixture-chrome', log: () => {} });
+  t.after(() => served.close());
+  await assert.rejects(leaseTab(served.url), /ENOENT/);
+  await assert.rejects(leaseTab(served.url), /ENOENT/);
+  await served.close();
+});
+
+test('an exited Chrome ends its lease and a new lease restarts Chrome', { skip }, async (t) => {
+  const { url } = await broker(t, { maxTabs: 1 });
+  const first = await leaseTab(url);
+  const browser = await puppeteer.connect({ browserWSEndpoint: first.cdpUrl });
+  await browser.close();
+  assert.equal(await first.ended, 'error');
+  const retry = await leaseTab(url);
+  assert.notEqual(retry.cdpUrl, first.cdpUrl);
+  retry.release();
+});
+
 test('a lease beyond the tab limit waits until a tab is released', { skip }, async (t) => {
   const { url } = await broker(t, { maxTabs: 2 });
   const first = await leaseTab(url, { client: 'first' });

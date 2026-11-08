@@ -82,12 +82,12 @@ function createPickerHarness(buildTarget) {
   };
 }
 
-function click(harness) {
+function click(harness, { metaKey = false } = {}) {
   harness.listeners.get('click')({
     target: harness.target,
     clientX: 0,
     clientY: 0,
-    metaKey: false,
+    metaKey,
     ctrlKey: false,
     preventDefault() {},
     stopPropagation() {},
@@ -139,6 +139,35 @@ test('pick resolves inline SVG element info using getAttribute class fallback', 
     parents: 'svg.icon-root',
   });
   assert.equal(harness.listeners.has('click'), false);
+});
+
+test('pick cancellation is terminal and a stale callback cannot affect a retry', async (t) => {
+  const harness = createPickerHarness((body) => makeElement({ parentElement: body }));
+  t.after(harness.restore);
+  const cancelled = window.pick('Cancel fixture');
+  const staleClick = harness.listeners.get('click');
+  harness.listeners.get('keydown')({ key: 'Escape', preventDefault() {} });
+  assert.equal(await cancelled, null);
+  assert.equal(harness.listeners.size, 0);
+  const retry = window.pick('Retry fixture');
+  staleClick({ target: harness.target });
+  assert.equal(harness.listeners.size, 3);
+  click(harness);
+  assert.equal((await retry).tag, 'div');
+  assert.equal(harness.listeners.size, 0);
+});
+
+test('pick multi-selection transitions to completion on Enter and clears outlines', async (t) => {
+  const harness = createPickerHarness((body) => makeElement({ parentElement: body }));
+  t.after(harness.restore);
+  const result = window.pick('Multi fixture');
+  click(harness, { metaKey: true });
+  click(harness, { metaKey: true });
+  assert.equal(harness.target.style.outline, '3px solid #10b981');
+  harness.listeners.get('keydown')({ key: 'Enter', preventDefault() {} });
+  assert.equal((await result).length, 1);
+  assert.equal(harness.target.style.outline, '');
+  assert.equal(harness.listeners.size, 0);
 });
 
 test('pick rejects extraction errors instead of leaving the click promise pending', async (t) => {

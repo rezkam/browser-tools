@@ -25,12 +25,12 @@ const served = await serveTabs({
 });
 process.stdout.write(`${JSON.stringify({ url: served.url })}\n`);
 
-let stopping = false;
-async function stop() {
-  if (stopping) return;
-  stopping = true;
-  await served.close();
-  process.exit(0);
+function stop() {
+  // The served instance owns idempotent shutdown, not a second CLI-local stopping flag.
+  void served.close().then(() => process.exit(0), (error) => {
+    console.error(error.message);
+    process.exit(1);
+  });
 }
 process.on('SIGTERM', stop);
 process.on('SIGINT', stop);

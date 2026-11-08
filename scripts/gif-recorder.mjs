@@ -22,6 +22,7 @@ import {
   sleep,
 } from './browser-control.mjs';
 import { openPrivateFile } from './cdp-common.mjs';
+import { createRecordingLifecycle } from './recording-lifecycle.mjs';
 
 export const DEFAULT_GIF_FPS = 10;
 export const DEFAULT_GIF_COLORS = 128;
@@ -220,22 +221,31 @@ export function createFfmpegGifEncoder({
     output,
   ], { stdio: ['pipe', 'ignore', 'pipe'] });
 
-  let spawnError = null;
+  let state = { phase: 'encoding' };
   let stderr = '';
-  child.once('error', (error) => {
-    spawnError = error;
-  });
+  const fail = (error) => { if (state.phase !== 'failed') state = { phase: 'failed', error }; };
+  child.once('error', fail);
+  child.stdin.on('error', fail);
   child.stderr.on('data', (chunk) => {
     stderr += chunk.toString('utf-8');
   });
   const closed = new Promise((resolve) => {
-    child.once('close', (code, signal) => resolve({ code, signal }));
+    child.once('close', (code, signal) => {
+      if (state.phase !== 'failed') {
+        if (code === 0) state = { phase: 'closed' };
+        else {
+          const termination = signal ? `signal ${signal}` : `exit status ${code}`;
+          fail(new Error(`ffmpeg failed to encode GIF (${termination})${stderr.trim() ? `: ${stderr.trim()}` : ''}`));
+        }
+      }
+      resolve();
+    });
   });
 
   return {
     async writeFrame(frame) {
-      if (spawnError) throw spawnError;
-      if (child.exitCode !== null) {
+      if (state.phase === 'failed') throw state.error;
+      if (state.phase !== 'encoding') {
         throw new Error(`ffmpeg exited before GIF recording finished${stderr.trim() ? `: ${stderr.trim()}` : ''}`);
       }
       await new Promise((resolveWrite, rejectWrite) => {
@@ -243,13 +253,10 @@ export function createFfmpegGifEncoder({
       });
     },
     async stop() {
-      if (!child.stdin.destroyed) child.stdin.end();
-      const result = await closed;
-      if (spawnError) throw spawnError;
-      if (result.code !== 0) {
-        const termination = result.signal ? `signal ${result.signal}` : `exit status ${result.code}`;
-        throw new Error(`ffmpeg failed to encode GIF (${termination})${stderr.trim() ? `: ${stderr.trim()}` : ''}`);
-      }
+      if (state.phase === 'encoding') state = { phase: 'finishing' };
+      if (!child.stdin.destroyed && !child.stdin.writableEnded) child.stdin.end();
+      await closed;
+      if (state.phase === 'failed') throw state.error;
       chmodSync(output, 0o600);
     },
   };
@@ -306,6 +313,24 @@ export async function recordGifSession({
     colors,
     scale,
   });
+  const lifecycle = createRecordingLifecycle('gif');
+  // Finalization belongs to this session, including when finalization itself fails.
+  let encoderState = { phase: 'open' };
+  const finalize = () => {
+    if (encoderState.phase === 'open') {
+      const result = Promise.resolve().then(() => encoder.stop());
+      encoderState = { phase: 'closing', result };
+      result.then(
+        () => { encoderState = { phase: 'closed', result }; },
+        (error) => { encoderState = { phase: 'failed', result, error }; },
+      );
+    }
+    return encoderState.result;
+  };
+  const phase = async (next, reason) => {
+    lifecycle.transition(next, reason ? { reason } : {});
+    await onPhase(next, reason);
+  };
   const frameIntervalMs = 1000 / fps;
   let nextFrameAt = now();
   let frameCount = 0;
@@ -334,9 +359,9 @@ export async function recordGifSession({
   };
 
   try {
-    await onPhase('pre-roll');
+    await phase('pre-roll');
     await capturePeriod(preRollMs);
-    await onPhase('recording');
+    await phase('recording');
 
     const deadline = now() + maxDurationSeconds * 1000;
     while (!shouldStop() && now() < deadline) {
@@ -345,12 +370,14 @@ export async function recordGifSession({
 
     const stopRequested = shouldStop();
     const reason = stopRequested ? 'requested' : 'max-duration';
-    await onPhase('post-roll', reason);
+    await phase('post-roll', reason);
     await capturePeriod(postRollMs);
-    await encoder.stop();
+    await finalize();
+    lifecycle.transition('completed');
     return { reason, frameCount };
   } catch (error) {
-    await encoder.stop().catch(() => {});
+    lifecycle.transition('failed', { error });
+    await finalize().catch(() => {});
     throw error;
   }
 }
@@ -369,25 +396,18 @@ export async function runGifRecordingWorker({
   const normalizedPort = normalizePort(port);
   const stateFile = gifRecordingStateFile(normalizedPort);
   const startedAt = new Date().toISOString();
-  const baseState = {
+  const metadata = {
     managedBy: 'browser-tools-gif-recorder',
     pid: process.pid,
     port: normalizedPort,
     output,
     ownerTokenHash: ownerTokenHash(ownerToken),
-    status: 'starting',
-    phase: 'starting',
     startedAt,
     options: { fps, colors, scale, preRollMs, postRollMs, maxDurationSeconds },
   };
-  writePrivateJson(stateFile, baseState);
+  const lifecycle = createRecordingLifecycle('gif', metadata, (state) => writePrivateJson(stateFile, state));
 
   let browser;
-  let currentState = baseState;
-  const updateState = (changes) => {
-    currentState = { ...currentState, ...changes };
-    writePrivateJson(stateFile, currentState);
-  };
 
   try {
     browser = await connectBrowser(normalizedPort, { ownerToken });
@@ -402,26 +422,11 @@ export async function runGifRecordingWorker({
       postRollMs,
       maxDurationSeconds,
       shouldStop: () => existsSync(gifRecordingStopFile(normalizedPort)),
-      onPhase: (phase, reason = null) => updateState({
-        status: phase === 'recording' ? 'recording' : currentState.status,
-        phase,
-        readyAt: phase === 'recording' ? new Date().toISOString() : currentState.readyAt,
-        reason: reason ?? currentState.reason,
-      }),
+      onPhase: (phase, reason) => lifecycle.transition(phase, reason ? { reason } : {}),
     });
-    updateState({
-      status: 'completed',
-      phase: 'completed',
-      reason: result.reason,
-      completedAt: new Date().toISOString(),
-    });
+    lifecycle.transition('completed', { reason: result.reason });
   } catch (error) {
-    updateState({
-      status: 'failed',
-      phase: 'failed',
-      error: error.message,
-      completedAt: new Date().toISOString(),
-    });
+    lifecycle.transition('failed', { error: error.message });
     throw error;
   } finally {
     browser?.disconnect();

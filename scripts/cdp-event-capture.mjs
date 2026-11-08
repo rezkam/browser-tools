@@ -1,4 +1,5 @@
 import { hasFlag, parsePositiveIntegerOption, sleep } from './browser-control.mjs';
+import { createRecordingLifecycle } from './recording-lifecycle.mjs';
 import {
   matchesPatterns,
   optionValues,
@@ -100,40 +101,58 @@ export async function runCdpEventCapture({
   writeEvent,
   onPhase = () => {},
 }) {
+  const lifecycle = createRecordingLifecycle('cdp');
   let eventCount = 0;
   const startedMonotonic = performance.now();
   const onAnyEvent = (method, params) => {
-    if (eventCount >= options.maxEvents) return;
+    if (['completed', 'failed'].includes(lifecycle.phase) || eventCount >= options.maxEvents) return;
     if (typeof method !== 'string') return;
     if (!matchesPatterns(method, options.eventPatterns, options.excludedEventPatterns)) return;
-    writeEvent({
-      timestamp: new Date().toISOString(),
-      elapsed_ms: Number((performance.now() - startedMonotonic).toFixed(3)),
-      method,
-      params: sanitizeCdpEvent(method, params, options),
-    });
-    eventCount += 1;
+    try {
+      writeEvent({
+        timestamp: new Date().toISOString(),
+        elapsed_ms: Number((performance.now() - startedMonotonic).toFixed(3)),
+        method,
+        params: sanitizeCdpEvent(method, params, options),
+      });
+      eventCount += 1;
+    } catch (error) {
+      lifecycle.transition('failed', { error });
+    }
   };
   session.on('*', onAnyEvent);
 
-  for (const domain of options.domains) {
-    if (options.skippedDomainEnables.includes(domain)) continue;
-    try {
-      await session.send(`${domain}.enable`);
-    } catch (error) {
-      throw new Error(`Could not enable CDP domain ${domain}: ${error.message}. Use --skip-enable ${domain} and --setup when the domain needs a different activation method.`);
+  const assertHealthy = () => {
+    if (lifecycle.phase === 'failed') throw lifecycle.snapshot().error;
+  };
+  try {
+    for (const domain of options.domains) {
+      if (options.skippedDomainEnables.includes(domain)) continue;
+      try {
+        await session.send(`${domain}.enable`);
+      } catch (error) {
+        throw new Error(`Could not enable CDP domain ${domain}: ${error.message}. Use --skip-enable ${domain} and --setup when the domain needs a different activation method.`);
+      }
     }
-  }
-  for (const command of options.setupCommands) {
-    await session.send(command.method, command.params);
-  }
-  await onPhase('recording');
+    for (const command of options.setupCommands) await session.send(command.method, command.params);
+    assertHealthy();
+    lifecycle.transition('recording');
+    await onPhase('recording');
 
-  const deadline = Date.now() + options.maxDurationSeconds * 1000;
-  while (!shouldStop() && Date.now() < deadline && eventCount < options.maxEvents) await sleep(100);
-  const reason = shouldStop() ? 'requested' : (eventCount >= options.maxEvents ? 'max-events' : 'max-duration');
-  await onPhase('post-wait', reason);
-  await sleep(options.postWaitMs);
-  session.off('*', onAnyEvent);
-  return { reason, eventCount };
+    const deadline = Date.now() + options.maxDurationSeconds * 1000;
+    while (lifecycle.phase === 'recording' && !shouldStop() && Date.now() < deadline && eventCount < options.maxEvents) await sleep(100);
+    assertHealthy();
+    const reason = shouldStop() ? 'requested' : (eventCount >= options.maxEvents ? 'max-events' : 'max-duration');
+    lifecycle.transition('post-wait', { reason });
+    await onPhase('post-wait', reason);
+    await sleep(options.postWaitMs);
+    assertHealthy();
+    lifecycle.transition('completed');
+    return { reason, eventCount };
+  } catch (error) {
+    if (lifecycle.phase !== 'failed') lifecycle.transition('failed', { error });
+    throw error;
+  } finally {
+    session.off('*', onAnyEvent);
+  }
 }

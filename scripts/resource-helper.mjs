@@ -65,10 +65,10 @@ function normalizePageResult(pageResult, closePage) {
   if (pageResult && typeof pageResult === 'object' && Object.hasOwn(pageResult, 'page')) {
     return {
       page: pageResult.page,
-      closePage: Object.hasOwn(pageResult, 'closePage') ? Boolean(pageResult.closePage) : closePage,
+      ownership: (Object.hasOwn(pageResult, 'closePage') ? pageResult.closePage : closePage) ? 'owned' : 'borrowed',
     };
   }
-  return { page: pageResult, closePage };
+  return { page: pageResult, ownership: closePage ? 'owned' : 'borrowed' };
 }
 
 export async function runBrowserResource({
@@ -82,16 +82,14 @@ export async function runBrowserResource({
   if (typeof run !== 'function') throw new Error('Missing Resource Helper run function');
 
   const browser = await connect(port, connectOptionsForOwner(ownerToken));
-  let page = null;
-  let shouldClosePage = closePage;
-
   try {
-    const normalized = normalizePageResult(getPage ? await getPage(browser) : null, closePage);
-    page = normalized.page;
-    shouldClosePage = normalized.closePage;
-    return await run({ browser, page });
+    const resource = normalizePageResult(getPage ? await getPage(browser) : null, closePage);
+    try {
+      return await run({ browser, page: resource.page });
+    } finally {
+      if (resource.ownership === 'owned') await closeResourcePage(resource.page);
+    }
   } finally {
-    if (shouldClosePage) await closeResourcePage(page);
     if (browser && typeof browser.disconnect === 'function') browser.disconnect();
   }
 }
