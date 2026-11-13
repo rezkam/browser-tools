@@ -1013,7 +1013,7 @@ export function removeChromeProfileLocks(profileDir) {
   }
 }
 
-export function chromeLaunchArgs({ port = DEFAULT_PORT, profileName = null, managedToken = null, userDataDir = null, headless = false, userAgent = null } = {}) {
+export function chromeLaunchArgs({ port = DEFAULT_PORT, profileName = null, managedToken = null, userDataDir = null, headless = false, userAgent = null, extensionDebugging = false } = {}) {
   const normalizedPort = normalizePort(port);
   const launchUserDataDir = userDataDir || (profileName ? profileDataDirForPort(normalizedPort) : freshProfileDirForPort(normalizedPort));
   const args = [
@@ -1030,6 +1030,7 @@ export function chromeLaunchArgs({ port = DEFAULT_PORT, profileName = null, mana
   // Bot defenses reject navigator.webdriver and headless Chrome's default 800x600 screen, so a
   // headless launch hides the automation flag and reports a common desktop display.
   if (headless) args.push('--headless=new', '--disable-blink-features=AutomationControlled', '--window-size=1920,1040', '--screen-info={1920x1080}');
+  if (extensionDebugging) args.push('--enable-unsafe-extension-debugging');
   // A headless launch otherwise advertises a "HeadlessChrome" User-Agent. When the copied profile is
   // signed in to Google, that headless fingerprint trips Google's session-theft protection and logs the
   // source profile out, while a windowed launch (normal Chrome UA) does not. Present the normal UA so a
@@ -1518,6 +1519,7 @@ export function managedBrowserReuseDecision({
   profileName = null,
   headless = false,
   forceProfileSync = false,
+  extensionDebugging = false,
 }) {
   if (!safety?.ok) return { ok: false, reason: safety?.reason || 'missing-managed-state' };
   const ownership = managedBrowserOwnershipSafety({ state, ownerToken });
@@ -1535,6 +1537,7 @@ export function managedBrowserReuseDecision({
   if (profileName && (!state.profileSourceDir || resolve(state.profileSourceDir) !== resolve(browserToolsChromeSourceDir()))) return fail('profile-source-mismatch');
   // Headless is fixed at launch, so a windowed request cannot be served by a headless browser.
   if (Boolean(state?.headless) !== Boolean(headless)) return fail('headless-mismatch');
+  if (Boolean(state?.extensionDebugging) !== Boolean(extensionDebugging)) return fail('extension-debugging-mismatch');
   return { ok: true, ownerId: ownership.ownerId, state };
 }
 
@@ -1547,6 +1550,7 @@ export function findReusableManagedBrowser({
   profileName = null,
   headless = false,
   forceProfileSync = false,
+  extensionDebugging = false,
   processes = listManagedChromeProcesses(),
 } = {}) {
   if (!normalizeOwnerValue(ownerToken)) return null;
@@ -1555,7 +1559,7 @@ export function findReusableManagedBrowser({
     const state = readManagedState(stateFileForPort(entry.port));
     if (!state || Number(state.pid) !== Number(entry.pid)) continue;
     const decision = managedBrowserReuseDecision({
-      safety: { ok: true }, state, ownerToken, includeGoogle, profileName, headless, forceProfileSync,
+      safety: { ok: true }, state, ownerToken, includeGoogle, profileName, headless, forceProfileSync, extensionDebugging,
     });
     if (decision.ok) return { ...entry, state };
   }
@@ -1623,7 +1627,7 @@ function launchHeadlessChromeApp({ chromeBin, args }) {
   return { pid };
 }
 
-export function launchChrome({ port = DEFAULT_PORT, profileName = null, userDataDir = null, ownerToken = null, ownerId = null, headless = false, includeGoogle = false } = {}) {
+export function launchChrome({ port = DEFAULT_PORT, profileName = null, userDataDir = null, ownerToken = null, ownerId = null, headless = false, includeGoogle = false, extensionDebugging = false } = {}) {
   ensureCacheDir();
   const normalizedPort = normalizePort(port);
   const launchUserDataDir = userDataDir || (profileName ? profileDataDirForPort(normalizedPort) : freshProfileDirForPort(normalizedPort));
@@ -1631,7 +1635,7 @@ export function launchChrome({ port = DEFAULT_PORT, profileName = null, userData
   const effectiveOwnerToken = normalizeOwnerValue(ownerToken) || generateOwnerToken();
   const chromeBin = browserToolsChromeBin();
   const userAgent = headless ? headlessUserAgent(chromeBin) : null;
-  const args = chromeLaunchArgs({ port: normalizedPort, profileName, managedToken, userDataDir: launchUserDataDir, headless, userAgent });
+  const args = chromeLaunchArgs({ port: normalizedPort, profileName, managedToken, userDataDir: launchUserDataDir, headless, userAgent, extensionDebugging });
   // A stale marker must not make a later launch appear to own a competing endpoint.
   rmSync(join(launchUserDataDir, 'DevToolsActivePort'), { force: true });
   assertChromeBinaryLaunchable(chromeBin);
@@ -1668,6 +1672,7 @@ export function launchChrome({ port = DEFAULT_PORT, profileName = null, userData
     userDataDir: launchUserDataDir,
     headless: Boolean(headless),
     includeGoogle: Boolean(includeGoogle),
+    extensionDebugging: Boolean(extensionDebugging),
     managedToken,
     ...buildOwnerState({ ownerToken: effectiveOwnerToken, ownerId }),
     // Who launched this browser, so a leaked one is attributable instead of anonymous.
@@ -1711,6 +1716,7 @@ export async function startChrome({
   ownerId = null,
   headless = false,
   includeGoogle = false,
+  extensionDebugging = false,
 } = {}) {
   let normalizedPort = normalizePort(port);
   const providedOwnerToken = normalizeOwnerValue(ownerToken);
@@ -1751,7 +1757,7 @@ export async function startChrome({
   if (providedOwnerToken) {
     const candidates = autoAllocatePort ? liveBrowsers : liveBrowsers.filter((entry) => entry.port === normalizedPort);
     const found = findReusableManagedBrowser({
-      ownerToken: providedOwnerToken, includeGoogle, processes: candidates,
+      ownerToken: providedOwnerToken, includeGoogle, extensionDebugging, processes: candidates,
       profileName: resolvedProfileName, headless, forceProfileSync,
     });
     const foundEndpoint = found ? await browserWSEndpoint(found.port) : null;
@@ -1794,7 +1800,7 @@ export async function startChrome({
         const safety = managedBrowserSafetyForPort(normalizedPort);
         const state = readManagedStateForPort(normalizedPort);
         const reuse = managedBrowserReuseDecision({
-          safety, state, ownerToken: providedOwnerToken, includeGoogle,
+          safety, state, ownerToken: providedOwnerToken, includeGoogle, extensionDebugging,
           profileName: resolvedProfileName, headless, forceProfileSync,
         });
         // Reuse first, on both paths. An auto-allocated start used to skip this entirely and walk to
@@ -1835,6 +1841,9 @@ export async function startChrome({
             throw new Error(
               `Chrome on :${normalizedPort} is running ${state?.headless ? 'headless' : 'windowed'}, but this start requested ${headless ? 'headless' : 'windowed'}. Headless is fixed at launch: stop it with scripts/stop.mjs --clean and start again.`,
             );
+          }
+          if (reuse.reason === 'extension-debugging-mismatch') {
+            throw new Error(`Chrome on :${normalizedPort} has different extension-debugging permissions. Stop it with the owner token and --clean, then restart with the requested extension settings.`);
           }
           if (reuse.reason === 'sync-requested') {
             throw new Error(
@@ -1920,6 +1929,7 @@ export async function startChrome({
           serializedReuse = findReusableManagedBrowser({
             ownerToken: providedOwnerToken,
             includeGoogle,
+            extensionDebugging,
             profileName: resolvedProfileName,
             headless,
             forceProfileSync,
@@ -1941,6 +1951,7 @@ export async function startChrome({
             ownerId: normalizedOwnerId,
             headless,
             includeGoogle,
+            extensionDebugging,
           });
         }
       } finally {
@@ -1959,6 +1970,7 @@ export async function startChrome({
           state,
           ownerToken: providedOwnerToken,
           includeGoogle,
+          extensionDebugging,
           profileName: resolvedProfileName,
           headless,
           forceProfileSync,

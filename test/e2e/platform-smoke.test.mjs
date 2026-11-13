@@ -54,6 +54,18 @@ test('native sandboxed browser: navigation, eval, screenshot, ownership, endpoin
     await page.screenshot({ path: screenshot });
     assert.ok(statSync(screenshot).size > 100);
     console.error('smoke: navigation/eval/screenshot passed');
+    // Pages can detect Runtime.enable, so the backend must not send it. Console and page-error events
+    // only arrive after that call, so their absence shows the protection is still on.
+    const observed = await browser.newPage({ background: true });
+    const events = [];
+    observed.on('console', message => events.push(`console:${message.text()}`));
+    observed.on('pageerror', error => events.push(`pageerror:${error.message}`));
+    await observed.goto('http://127.0.0.1:' + server.address().port);
+    await observed.evaluate(() => { console.log('smoke-log'); setTimeout(() => { throw new Error('smoke-error'); }, 0); });
+    await new Promise(resolve => setTimeout(resolve, 500));
+    await observed.close();
+    assert.deepEqual(events, []);
+    console.error('smoke: Runtime.enable stays off');
     browser.disconnect(); browser = null;
     assert.ok(['stopped', 'already-gone', 'killed'].includes(stopChrome({ port, ownerToken, clean: true }).status));
     assert.equal(await browserWSEndpoint(port, 250), null);

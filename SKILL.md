@@ -1,7 +1,7 @@
 ---
 name: browser-tools
 description: "Control a sandboxed Chrome browser with a copied profile, including launch, stop, navigation, page JavaScript evaluation, screenshots, GIF recording and contact-sheet review, filtered HAR capture, agent-readable network extraction, raw CDP event recording, direct owner-protected CDP calls, DOM picking, page link extraction, article extraction, local profile configuration, and safe managed-browser ownership. Use this skill whenever the user asks to open or inspect a website, scrape a generic page, use a logged-in browser session, record or review browser interactions, capture XHR or Fetch traffic, create a HAR, inspect network requests, use Chrome DevTools Protocol, derive API calls from browser behavior, visually review a multi-step flow, take screenshots, evaluate browser JavaScript, manage Chrome profiles for agents, or control browser tabs. Do not use it for finance-specific data workflows, use the finance skill instead."
-compatibility: "Requires the @rezkam/browser-tools npm package (npm install -g @rezkam/browser-tools, or npx @rezkam/browser-tools), macOS or Linux Chrome/Chromium, Node.js 20+, ffmpeg and ffprobe for GIF recording and review, and network access for browser automation."
+compatibility: "Requires the @rezkam/browser-tools npm package (npm install -g @rezkam/browser-tools, or npx @rezkam/browser-tools), macOS or Linux Chrome/Chromium, Node.js 22.12+, ffmpeg and ffprobe for GIF recording and review, and network access for browser automation."
 ---
 
 # Browser Tools
@@ -46,6 +46,8 @@ Every `browser-tools` subcommand dispatches to the package's `scripts/` sources 
 | --- | --- |
 | Configure private Browser Tools config | `browser-tools config profiles`, `browser-tools config active-profiles`, `browser-tools config task-profile set <task> --profile "<alias>"` |
 | Start Chrome | `browser-tools start`, `browser-tools start --profile "<Chrome profile folder or local alias>"`, `browser-tools start --task <task>`, or `browser-tools start --headless` |
+| Start with a trusted unpacked extension | `browser-tools start --headless --extension /absolute/path/to/extension` |
+| Load or update an extension | `browser-tools extensions load <directory> --port <n>`, `browser-tools extensions update <directory> --port <n>` |
 | Check status | `browser-tools status`, `browser-tools status --port <n> --json` |
 | Stop Chrome | `browser-tools stop --clean` |
 | List running managed browsers | `browser-tools stop --status` |
@@ -65,6 +67,8 @@ Every `browser-tools` subcommand dispatches to the package's `scripts/` sources 
 | Extract article text from the current page | `browser-tools extract-article --chars 6000` |
 
 Read [browser-control.md](references/browser-control.md) when you need profile names, private config behavior, port behavior, GIF recording options, DOM picking controls, directory defaults, or implementation details.
+
+Connections use pinned Rebrowser Puppeteer, which reduces particular automation signals but does not guarantee undetectability or provider access. Because that backend does not send `Runtime.enable`, `page.on('console')` and `page.on('pageerror')` receive nothing. Keep that protection on: read page state with `page.evaluate` or report through `exposeFunction` instead. Extension commands require the matching owner token and a browser started with `--extension` or `--extension-debugging`. An update reloads the same trusted directory without uninstalling, preserving identity and settings. Browser Tools verifies that a service worker of the loaded version activated, and fails the load or update when the worker script does not start, but does not fetch extension releases or validate application-specific rule freshness; retain the application's trusted updater and rule checks.
 
 ## Visual interaction recording
 

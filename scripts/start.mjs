@@ -13,7 +13,8 @@
  *   BROWSER_TOOLS_OWNER_TOKEN="<owner token>" scripts/start.mjs
  */
 
-import { CLI_OWNER_ID, hasFlag, requiredOptionValue, parseOwnerId, parseOwnerToken, parsePort, startChrome } from './browser-control.mjs';
+import { CLI_OWNER_ID, hasFlag, requiredOptionValue, parseOwnerId, parseOwnerToken, parsePort, startChrome, stopChrome } from './browser-control.mjs';
+import { extensionDirectory, loadManagedExtension } from './extensions.mjs';
 
 const args = process.argv.slice(2);
 const profileName = requiredOptionValue(args, '--profile', null);
@@ -26,8 +27,18 @@ const port = parsePort(args);
 const ownerToken = parseOwnerToken(args);
 const ownerId = parseOwnerId(args) || CLI_OWNER_ID;
 
+let result;
 try {
-  const result = await startChrome({ port, profileName, taskName, forceProfileSync, autoAllocatePort: !explicitPort, ownerToken, ownerId, headless, includeGoogle });
+  const extensions = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--extension') extensions.push(extensionDirectory(args[++i]).path);
+  }
+  const extensionDebugging = hasFlag(args, '--extension-debugging') || extensions.length > 0;
+  result = await startChrome({ port, profileName, taskName, forceProfileSync, autoAllocatePort: !explicitPort, ownerToken, ownerId, headless, includeGoogle, extensionDebugging });
+  for (const directory of extensions) {
+    const extension = await loadManagedExtension({ directory, port: result.port, ownerToken: result.ownerToken });
+    console.log(`✓ Extension ${extension.name} ${extension.version} loaded (${extension.id}; worker verified: ${extension.workerVerified})`);
+  }
   const mode = result.headless ? ' (headless)' : '';
   if (result.status === 'reused') {
     console.log(`✓ Chrome already running on :${result.port}${mode}; reusing owned instance`);
@@ -44,6 +55,8 @@ try {
     console.log(`Use with follow-up commands: --port ${result.port}`);
   }
 } catch (e) {
+  // A failed initial extension load must not leave a new browser behind. Do not stop a reused session.
+  if (result?.status === 'started') stopChrome({ port: result.port, ownerToken: result.ownerToken, clean: true });
   console.error(`✗ ${e.message}`);
   process.exit(1);
 }

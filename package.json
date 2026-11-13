@@ -13,7 +13,7 @@
     "url": "https://github.com/rezkam/browser-tools/issues"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.12.0"
   },
   "bin": {
     "browser-tools": "./bin/browser-tools.mjs"
@@ -22,6 +22,7 @@
     ".": "./scripts/browser-control.mjs",
     "./browser-control.mjs": "./scripts/browser-control.mjs",
     "./resource-helper.mjs": "./scripts/resource-helper.mjs",
+    "./extensions.mjs": "./scripts/extensions.mjs",
     "./tab-broker.mjs": "./scripts/tab-broker.mjs",
     "./package.json": "./package.json"
   },
@@ -42,7 +43,7 @@
     "validate": "npm test && npm run test:e2e"
   },
   "dependencies": {
-    "puppeteer-core": "^24.42.0",
+    "puppeteer-core": "npm:rebrowser-puppeteer-core@25.16.0",
     "ws": "^8.22.0"
   },
   "devDependencies": {
