@@ -22,6 +22,7 @@
  *   browser-tools pick "<instruction>" [--port <n>]
  *   browser-tools scrape-page [--port <n>]
  *   browser-tools extract-article [--chars <n>] [--port <n>]
+ *   browser-tools extensions load|update <trusted-unpacked-directory> [--port <n>]
  *   browser-tools config profiles|active-profiles|task-profile ...
  *   browser-tools serve [--max-tabs <n>] [--tab-seconds <n>] [--headless] [--proxy-server <url>] [--until-stdin-closes]
  */
@@ -49,6 +50,7 @@ const COMMANDS = {
   pick: 'pick.mjs',
   'scrape-page': 'scrape-page.mjs',
   'extract-article': 'extract-article.mjs',
+  extensions: 'extensions.mjs',
   config: 'config.mjs',
   serve: 'serve.mjs',
 };

@@ -48,7 +48,7 @@ jobs:
           echo "BROWSER_TOOLS_CHROME_BIN=$RUNNER_TEMP/browser-tools-chrome" >> "$GITHUB_ENV"
 
       - name: Real sandboxed Chrome smoke
-        run: node --test test/e2e/platform-smoke.test.mjs
+        run: node --test --test-concurrency=1 test/e2e/platform-smoke.test.mjs test/e2e/extensions.test.mjs
 
       - name: Diagnose hosted Chrome launch failure
         if: failure() && runner.os == 'macOS'

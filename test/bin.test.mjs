@@ -32,7 +32,7 @@ test('unknown command exits 1 with an actionable error', () => {
 
 test('every dispatch table command names an existing usage line', () => {
   const result = run(['--help']);
-  for (const name of ['start', 'status', 'stop', 'nav', 'eval', 'screenshot', 'record-gif', 'review-gif', 'record-har', 'extract-har', 'record-cdp', 'cdp', 'pick', 'scrape-page', 'extract-article', 'config']) {
+  for (const name of ['start', 'status', 'stop', 'nav', 'eval', 'screenshot', 'record-gif', 'review-gif', 'record-har', 'extract-har', 'record-cdp', 'cdp', 'pick', 'scrape-page', 'extract-article', 'extensions', 'config']) {
     assert.match(result.stderr, new RegExp(`^  ${name}$`, 'm'), `--help should list "${name}"`);
   }
 });
@@ -43,6 +43,7 @@ test('network capture commands expose actionable no-argument usage', () => {
     ['extract-har', /Usage: browser-tools extract-har/],
     ['record-cdp', /Usage: browser-tools record-cdp/],
     ['cdp', /Usage: browser-tools cdp call/],
+    ['extensions', /Usage: browser-tools extensions load\|update/],
   ]) {
     const result = run([command]);
     assert.equal(result.status, 1, `${command} should reject missing arguments`);

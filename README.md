@@ -1,6 +1,6 @@
 # @rezkam/browser-tools
 
-Managed Chrome automation with isolated profiles and owner-protected sessions. Browser Tools can drive pages, inspect the DOM, capture visual and network evidence, and extract page content without connecting to or stopping your main Chrome.
+Managed Chrome automation with isolated profiles and owner-protected sessions. Connections use the pinned Rebrowser Puppeteer backend to reduce library-specific automation signals; this does not guarantee undetectability or provider access. Browser Tools can drive pages, inspect the DOM, capture visual and network evidence, and extract page content without connecting to or stopping your main Chrome.
 
 This repository provides both the `browser-tools` skill and the `@rezkam/browser-tools` npm package. The skill uses the same CLI that the package installs.
 
@@ -34,7 +34,7 @@ Commands can also run without a global install:
 npx @rezkam/browser-tools <command>
 ```
 
-Browser Tools requires macOS or Linux, installed Google Chrome or Chromium, and Node.js 20 or newer. GIF recording and review additionally require `ffmpeg` and `ffprobe`:
+Browser Tools requires macOS or Linux, installed Google Chrome or Chromium, and Node.js 22.12 or newer. GIF recording and review additionally require `ffmpeg` and `ffprobe`:
 
 ```bash
 brew install ffmpeg
@@ -72,6 +72,7 @@ Use `--profile "<profile or alias>"` when an existing login is needed, `--sync` 
 | Area | Commands | What they do |
 | --- | --- | --- |
 | Browser lifecycle | `start`, `status`, `stop` | Launch, inspect, stop, clean, reap, and prune managed Chrome sessions |
+| Extensions | `extensions load`, `extensions update` | Load trusted unpacked extensions or reload updated files while retaining identity and settings |
 | Profile configuration | `config` | Discover profiles, list active profiles, and manage task-to-profile mappings |
 | Page control | `nav`, `eval`, `screenshot` | Navigate the active tab or a new background tab, run page JavaScript, and capture PNG screenshots |
 | DOM inspection | `pick` | Select one or more visible elements and return tag, id, class, text, HTML, and parent information |
@@ -97,12 +98,36 @@ Browser Tools stores local configuration under `~/.agents/browser-tools` and man
 
 For detailed ownership rules, profile behavior, capture filters, and command options, see the repository's [SKILL.md](https://github.com/rezkam/browser-tools/blob/main/SKILL.md) and [Browser Control reference](https://github.com/rezkam/browser-tools/blob/main/references/browser-control.md).
 
+## Extensions
+
+Load a trusted unpacked extension when starting a managed browser:
+
+```bash
+browser-tools start --headless --extension /absolute/path/to/extension
+# Repeat --extension to load multiple extensions.
+```
+
+Startup verifies the manifest and, for service-worker extensions, the running worker's version before reporting ready. A failed initial load stops the newly created browser. Loading into an existing owned session instead requires that it was started with `--extension-debugging`:
+
+```bash
+browser-tools extensions load /absolute/path/to/extension --port <reported-port>
+# After replacing the trusted files in the same directory:
+browser-tools extensions update /absolute/path/to/extension --port <reported-port>
+```
+
+Both commands require the owner's token. Updates reload without uninstalling, retaining the extension ID and settings; use the same directory or a manifest with a stable key. Changing an extension's key changes its identity. Extension-debugging permissions are fixed at launch, explicit, and part of browser reuse checks. Do not load untrusted extensions: they can access site data in the managed profile.
+
+Browser Tools does not download extensions or silently enable their online updaters. The caller owns trusted downloads, signature/digest validation, rule freshness and application-specific configuration. Applications should retain their existing verified download and configuration workflow and check the active network rules. A loaded worker alone does not prove provider rules are enabled.
+
 ## Programmatic use
 
 ```js
 import { activePage, connectBrowser, startChrome, stopChrome, withBrowser } from '@rezkam/browser-tools';
 import { runBrowserResource } from '@rezkam/browser-tools/resource-helper.mjs';
+import { loadManagedExtension } from '@rezkam/browser-tools/extensions.mjs';
 ```
+
+For extensions, use `startChrome({ extensionDebugging: true, ...options })`, then `loadManagedExtension({ directory, port, ownerToken })`. Applications that already configure their extension may instead call `browser.installExtension(directory)` on an owned connection.
 
 The root package export and `@rezkam/browser-tools/browser-control.mjs` both expose the browser lifecycle and connection module. The resource helper export provides the shared lifecycle for generic extractors.
 
