@@ -107,7 +107,7 @@ browser-tools start --headless --extension /absolute/path/to/extension
 # Repeat --extension to load multiple extensions.
 ```
 
-Startup verifies the manifest and, for service-worker extensions, the running worker's version before reporting ready. A failed initial load stops the newly created browser. Loading into an existing owned session instead requires that it was started with `--extension-debugging`:
+Startup verifies the manifest and, for service-worker extensions, that a worker of that version reached the activated state before reporting ready. A worker script that fails to evaluate is reported as a failed load or update. A failed initial load stops the newly created browser. Loading into an existing owned session instead requires that it was started with `--extension-debugging`:
 
 ```bash
 browser-tools extensions load /absolute/path/to/extension --port <reported-port>
@@ -130,6 +130,10 @@ import { loadManagedExtension } from '@rezkam/browser-tools/extensions.mjs';
 For extensions, use `startChrome({ extensionDebugging: true, ...options })`, then `loadManagedExtension({ directory, port, ownerToken })`. Applications that already configure their extension may instead call `browser.installExtension(directory)` on an owned connection.
 
 The root package export and `@rezkam/browser-tools/browser-control.mjs` both expose the browser lifecycle and connection module. The resource helper export provides the shared lifecycle for generic extractors.
+
+### Console and page-error events
+
+The Rebrowser backend does not send `Runtime.enable`, because pages can detect it. As a result `page.on('console')` and `page.on('pageerror')` receive nothing by default, without an error. Page evaluation, navigation, network events, and `exposeFunction` are unaffected. A process that needs those events can set `REBROWSER_PATCHES_RUNTIME_FIX_MODE=0` before connecting, which restores them and the detectable signal for every connection that process makes.
 
 ### Shared tabs
 

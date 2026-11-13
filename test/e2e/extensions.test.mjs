@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { stopChrome, connectBrowser, browserWSEndpoint } from '../../scripts/browser-control.mjs';
+import { startChrome, stopChrome, connectBrowser, browserWSEndpoint } from '../../scripts/browser-control.mjs';
 import { loadManagedExtension } from '../../scripts/extensions.mjs';
 
 const BIN = fileURLToPath(new URL('../../bin/browser-tools.mjs', import.meta.url));
@@ -115,7 +115,39 @@ test('Rebrowser loads and updates a real MV3 extension, retaining settings and a
   }
 });
 
-test('a failed initial extension load cleans up its newly launched browser', { timeout: 60000 }, async () => {
+test('an update whose service worker never starts is reported as a failure', { timeout: 60000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bt-extension-dead-worker-'));
+  const oldCache = process.env.BROWSER_TOOLS_CACHE_DIR;
+  process.env.BROWSER_TOOLS_CACHE_DIR = join(root, 'cache');
+  const directory = join(root, 'extension');
+  mkdirSync(directory);
+  let started;
+  try {
+    started = await startChrome({ port: 19470, autoAllocatePort: true, headless: true, ownerId: 'extension-test', extensionDebugging: true });
+    const { port, ownerToken } = started;
+    extension(directory, '1.0.0');
+    writeFileSync(join(directory, 'worker.js'), 'chrome.runtime.onInstalled.addListener(() => {});');
+    assert.equal((await loadManagedExtension({ port, ownerToken, directory, timeout: 10000 })).workerVerified, true);
+    // Chrome accepts the manifest, but a script that fails to evaluate never becomes a running worker.
+    for (const [version, script] of [['1.0.1', 'this is not valid JavaScript ((('], ['1.0.2', 'throw new Error("fails at startup");']]) {
+      extension(directory, version);
+      writeFileSync(join(directory, 'worker.js'), script);
+      await assert.rejects(
+        loadManagedExtension({ port, ownerToken, directory, timeout: 3000 }),
+        new RegExp(`${version.replaceAll('.', '\\.')}.*service worker did not start`),
+      );
+    }
+    extension(directory, '1.0.3');
+    assert.equal((await loadManagedExtension({ port, ownerToken, directory, timeout: 10000 })).workerVerified, true);
+  } finally {
+    if (started) stopChrome({ port: started.port, ownerToken: started.ownerToken, clean: true });
+    if (oldCache === undefined) delete process.env.BROWSER_TOOLS_CACHE_DIR;
+    else process.env.BROWSER_TOOLS_CACHE_DIR = oldCache;
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('a failed initial extension load cleans up its newly launched browser',{ timeout: 60000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'bt-extension-failure-'));
   const oldCache = process.env.BROWSER_TOOLS_CACHE_DIR;
   process.env.BROWSER_TOOLS_CACHE_DIR = join(root, 'cache');

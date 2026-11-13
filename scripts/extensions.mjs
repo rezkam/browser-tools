@@ -22,6 +22,39 @@ export function extensionDirectory(directory) {
   return { path, manifest };
 }
 
+const WORKER_POLL_MS = 100;
+const WORKER_PROBE_MS = 2000;
+
+// The manifest version alone proves nothing about the worker: Chrome answers getManifest() in the
+// short-lived global of a worker whose script failed to evaluate. Only a script that ran reaches
+// "activated", so require both. Poll instead of waiting on target events, because a healthy worker
+// can still be installing when its target appears and no later event would re-check it.
+async function extensionWorkerStarted(browser, { id, version, timeout }) {
+  const deadline = Date.now() + timeout;
+  const probe = async (target) => {
+    const worker = await target.worker();
+    return worker.evaluate(
+      expected => chrome.runtime.getManifest().version === expected && self.serviceWorker?.state === 'activated',
+      version,
+    );
+  };
+  while (Date.now() < deadline) {
+    const targets = browser.targets().filter(target => target.type() === 'service_worker' && target.url().startsWith(`chrome-extension://${id}/`));
+    for (const target of targets) {
+      // A worker that is being torn down can leave an evaluation unanswered, so bound each probe.
+      let timer;
+      const expired = new Promise(resolve => { timer = setTimeout(resolve, WORKER_PROBE_MS, false); });
+      try {
+        if (await Promise.race([probe(target).catch(() => false), expired])) return true;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    await new Promise(resolve => setTimeout(resolve, WORKER_POLL_MS));
+  }
+  return false;
+}
+
 export async function loadManagedExtension({ directory, port, ownerToken, timeout = 30000 }) {
   const { path, manifest } = extensionDirectory(directory);
   const browser = await connectBrowser(port, { ownerToken });
@@ -32,18 +65,9 @@ export async function loadManagedExtension({ directory, port, ownerToken, timeou
     // Chrome reloads an existing unpacked extension at the same path, retaining its ID and storage.
     // Do not uninstall as part of an update: uninstalling destroys the extension settings.
     const id = await browser.installExtension(path);
-    let workerVerified = false;
-    if (manifest.background?.service_worker) {
-      await browser.waitForTarget(async target => {
-        if (target.type() !== 'service_worker' || !target.url().startsWith(`chrome-extension://${id}/`)) return false;
-        try {
-          const worker = await target.worker();
-          return await worker.evaluate(version => chrome.runtime.getManifest().version === version, manifest.version);
-        } catch {
-          return false;
-        }
-      }, { timeout });
-      workerVerified = true;
+    const workerVerified = Boolean(manifest.background?.service_worker);
+    if (workerVerified && !await extensionWorkerStarted(browser, { id, version: manifest.version, timeout })) {
+      throw new Error(`Extension ${manifest.name} ${manifest.version} was loaded, but its service worker did not start within ${timeout}ms. Check the worker script for errors, then update again.`);
     }
     return { id, name: manifest.name, version: manifest.version, directory: path, workerVerified };
   } finally {
