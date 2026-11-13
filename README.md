@@ -133,7 +133,7 @@ The root package export and `@rezkam/browser-tools/browser-control.mjs` both exp
 
 ### Console and page-error events
 
-The Rebrowser backend does not send `Runtime.enable`, because pages can detect it. As a result `page.on('console')` and `page.on('pageerror')` receive nothing by default, without an error. Page evaluation, navigation, network events, and `exposeFunction` are unaffected. A process that needs those events can set `REBROWSER_PATCHES_RUNTIME_FIX_MODE=0` before connecting, which restores them and the detectable signal for every connection that process makes.
+The Rebrowser backend does not send `Runtime.enable`, because pages can detect it. As a result `page.on('console')` and `page.on('pageerror')` receive nothing, without an error. Page evaluation, navigation, network events, and `exposeFunction` are unaffected. Browser Tools keeps that protection on and offers no way to turn it off. Read page state with `page.evaluate` instead, or have the page report through `exposeFunction`.
 
 ### Shared tabs
 

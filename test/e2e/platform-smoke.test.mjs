@@ -54,39 +54,19 @@ test('native sandboxed browser: navigation, eval, screenshot, ownership, endpoin
     await page.screenshot({ path: screenshot });
     assert.ok(statSync(screenshot).size > 100);
     console.error('smoke: navigation/eval/screenshot passed');
+    // Pages can detect Runtime.enable, so the backend must not send it. Console and page-error events
+    // only arrive after that call, so their absence shows the protection is still on.
+    const observed = await browser.newPage({ background: true });
+    const events = [];
+    observed.on('console', message => events.push(`console:${message.text()}`));
+    observed.on('pageerror', error => events.push(`pageerror:${error.message}`));
+    await observed.goto('http://127.0.0.1:' + server.address().port);
+    await observed.evaluate(() => { console.log('smoke-log'); setTimeout(() => { throw new Error('smoke-error'); }, 0); });
+    await new Promise(resolve => setTimeout(resolve, 500));
+    await observed.close();
+    assert.deepEqual(events, []);
+    console.error('smoke: Runtime.enable stays off');
     browser.disconnect(); browser = null;
-    // The backend does not send Runtime.enable, so console and page-error events are off unless a
-    // process opts out of that patch. The documented opt-out must keep working with the pinned backend.
-    const pageEvents = async () => {
-      const connection = await connectBrowser(port, { ownerToken });
-      try {
-        const observed = await connection.newPage({ background: true });
-        const events = [];
-        observed.on('console', message => events.push(`console:${message.text()}`));
-        observed.on('pageerror', error => events.push(`pageerror:${error.message}`));
-        await observed.goto('http://127.0.0.1:' + server.address().port);
-        await observed.evaluate(() => { console.log('smoke-log'); setTimeout(() => { throw new Error('smoke-error'); }, 0); });
-        await new Promise(resolve => setTimeout(resolve, 500));
-        await observed.close();
-        return events;
-      } finally {
-        connection.disconnect();
-      }
-    };
-    const oldFixMode = process.env.REBROWSER_PATCHES_RUNTIME_FIX_MODE;
-    try {
-      delete process.env.REBROWSER_PATCHES_RUNTIME_FIX_MODE;
-      assert.deepEqual(await pageEvents(), []);
-      process.env.REBROWSER_PATCHES_RUNTIME_FIX_MODE = '0';
-      const restored = await pageEvents();
-      assert.equal(restored.length, 2, restored.join(', '));
-      assert.equal(restored[0], 'console:smoke-log');
-      assert.match(restored[1], /^pageerror:.*smoke-error$/);
-    } finally {
-      if (oldFixMode === undefined) delete process.env.REBROWSER_PATCHES_RUNTIME_FIX_MODE;
-      else process.env.REBROWSER_PATCHES_RUNTIME_FIX_MODE = oldFixMode;
-    }
-    console.error('smoke: page event opt-out passed');
     assert.ok(['stopped', 'already-gone', 'killed'].includes(stopChrome({ port, ownerToken, clean: true }).status));
     assert.equal(await browserWSEndpoint(port, 250), null);
     assert.equal(existsSync(state.userDataDir), false);
