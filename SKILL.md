@@ -55,6 +55,9 @@ Every `browser-tools` subcommand dispatches to the package's `scripts/` sources 
 | Navigate | `browser-tools nav https://example.com` |
 | Evaluate JavaScript | `browser-tools eval 'document.title'` |
 | Screenshot | `browser-tools screenshot --full` |
+| Screenshot at a phone size | `browser-tools screenshot --viewport 375x667 --mobile` |
+| Screenshot one element | `browser-tools screenshot --selector 'table.results'` |
+| Measure at a phone size | `browser-tools eval --viewport 375x667 --mobile 'innerWidth'` |
 | Record active tab as GIF | `browser-tools record-gif start --output ./login_process.gif`, then `browser-tools record-gif stop` |
 | Check GIF recording | `browser-tools record-gif status --json` |
 | Probe GIF and create contact sheet | `browser-tools review-gif ./login_process.gif` |
@@ -172,6 +175,8 @@ Capture is tied to the active tab selected at `start`. If an interaction moves t
 - Each start owns the browser with an owner token. Export the printed token as `BROWSER_TOOLS_OWNER_TOKEN` for follow-up commands. Avoid passing user-supplied tokens with `--owner-token` because command-line arguments can be visible to other local users through process listings.
 - Every managed browser must have an owner id, so a start can never produce a browser nothing can stop. Library callers pass `ownerId`; a command-line start stamps `cli` when none is given. A browser that nothing owns is reclaimable immediately. An owned browser becomes reclaimable only after it has run for two hours and its recorded launcher process has exited. Every start runs this reap before enforcing the browser cap. A browser with a live launcher remains protected regardless of age, and direct owner-controlled stop and connection commands still require the matching token.
 - Open new browser tabs in the background with `browser.newPage({ background: true })` so automation does not steal OS focus from the user. Do not call `page.bringToFront()` unless the user explicitly asks to see or interact with that tab.
+- Set a screen size with `--viewport <width>x<height> [--mobile] [--scale <n>]` on `screenshot`, `eval`, or `nav`. The size lasts for that one command, so pass it to every command that should see it. Never set it with `browser-tools cdp call Emulation.setDeviceMetricsOverride`: Chrome drops that override when the call returns, and the next command silently sees a desktop page. `screenshot` prints the image size on stderr and fails when a viewport capture does not match the requested size.
+- In library code, capture with `capturePage(page, { viewport, fullPage, selector })` from `@rezkam/browser-tools/viewport.mjs`. Puppeteer's `elementHandle.screenshot()` never finishes on a background tab, and `page.screenshot()` ignores the scale of a size set on another CDP session.
 - For multi-step visual recordings, always capture extra frames before and after actions, always use an action-specific GIF filename, then inspect the `review-gif` contact sheet for initial, action, and final states.
 - Network and CDP capture must use the managed browser's owner token. Preserve raw evidence by default for debugging, and add `--redact` when exact sensitive values are not needed.
 - Send useful result data to stdout. Treat stderr as progress and diagnostics.

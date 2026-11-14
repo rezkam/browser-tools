@@ -18,7 +18,7 @@ Requires the `@rezkam/browser-tools` npm package (`npm install -g @rezkam/browse
 | `browser-tools stop` | Stop sandboxed Chrome, or sweep leftovers | `browser-tools stop --dry-run` then `browser-tools stop --clean`; `browser-tools stop --status`, `--reap`, `--prune` |
 | `browser-tools nav` | Navigate current tab or open a new tab | `browser-tools nav https://example.com --new` |
 | `browser-tools eval` | Run JavaScript in the active tab | `browser-tools eval 'document.title'` |
-| `browser-tools screenshot` | Capture visible or full-page screenshot | `browser-tools screenshot --full` |
+| `browser-tools screenshot` | Capture the viewport, the full page, or one element, optionally at a set screen size | `browser-tools screenshot --full`, `browser-tools screenshot --viewport 375x667 --mobile`, `browser-tools screenshot --selector 'table.results'` |
 | `browser-tools record-gif` | Start, inspect, or stop active-tab GIF recording | `browser-tools record-gif start --output ./login_process.gif` |
 | `browser-tools review-gif` | Probe a GIF and render a sampled contact sheet | `browser-tools review-gif ./login_process.gif` |
 | `browser-tools record-har` | Record filtered active-tab HTTP traffic as HAR 1.2 | `browser-tools record-har start --output ./checkout_api_network.har --preset api` |
@@ -229,6 +229,39 @@ browser-tools eval 'document.title' --port <reported port>
 browser-tools eval 'document.querySelectorAll("a").length' --port <reported port>
 browser-tools screenshot --full --port <reported port>
 ```
+
+### Screen size and screenshots
+
+```bash
+browser-tools screenshot --viewport 375x667 --mobile --port <reported port>
+browser-tools screenshot --viewport 375x667 --scale 2 --selector 'table.results' --port <reported port>
+browser-tools eval --viewport 375x667 --mobile 'document.querySelector("table").getBoundingClientRect().width' --port <reported port>
+browser-tools nav https://example.com --viewport 375x667 --mobile --port <reported port>
+```
+
+`--viewport <width>x<height>` sets the screen size in CSS pixels for `screenshot`, `eval`, and `nav`. `--mobile` adds phone behavior (the page's viewport meta tag, touch, overlay scrollbars) and `--scale <n>` sets the device pixel ratio, so `--viewport 375x667 --scale 2` produces a 750x1334 image. `--selector <css>` captures one element, wherever it is on the page.
+
+Rules that keep a capture honest:
+
+- The size lasts for one command. Chrome ties an emulated size to the CDP session that set it, and every command is its own session. Pass `--viewport` to each command that should see the size. The tab is not reloaded and returns to its real size when the command ends.
+- Do not set the size with `browser-tools cdp call Emulation.setDeviceMetricsOverride`. The override ends when the call returns, so the next command sees a desktop page even though the call succeeded. The command prints a note on stderr when it is used this way.
+- A page that chooses its layout while loading must be loaded at that size: use `nav --viewport`, then repeat `--viewport` on the later commands.
+- `screenshot` prints the image size on stderr (`375x667 px`) and the file path on stdout. A viewport capture that does not measure the requested size, or a page whose width changes during the capture, fails with exit code 1. A full-page or element capture is as large as its content. Without `--mobile`, that content is narrower than the viewport by the width of the scrollbar.
+- Measure before a full-page or element capture, not after. On a desktop page Chrome drops the scrollbar for such a capture and does not bring it back, so the page is 15 px wider afterwards until it is reloaded. This is Chrome's behavior and is left alone on purpose: putting the scrollbar back takes a window resize that the page can see. A `--mobile` size has no scrollbar and is not affected.
+- On a background tab the tool confirms that the page is back at its own size before the command ends, and fails if it is not.
+- Check a layout measurement with `eval --viewport` at the same size as the screenshot. A table that reads 1048 px wide on a 375 px page means the size was not applied to that command.
+
+Library code gets the same behavior from `@rezkam/browser-tools/viewport.mjs`:
+
+```js
+import { capturePage, withViewport } from '@rezkam/browser-tools/viewport.mjs';
+
+const viewport = { width: 375, height: 667, deviceScaleFactor: 2, mobile: true };
+const png = await capturePage(page, { viewport, selector: 'table.results' });
+const width = await withViewport(page, viewport, () => page.evaluate(() => innerWidth));
+```
+
+Prefer these to Puppeteer's own calls on managed tabs. `elementHandle.screenshot()` waits for a visibility check that never completes on a background tab, which is how Browser Tools opens tabs. `page.screenshot()` captures on Puppeteer's session, so it ignores the scale of a size that another session set. `page.setViewport()` reloads the page whenever the mobile setting changes.
 
 ### Record a multi-step interaction as GIF
 
