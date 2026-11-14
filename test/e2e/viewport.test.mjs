@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { startChrome, stopChrome, connectBrowser } from '../../scripts/browser-control.mjs';
-import { capturePage, pngSize } from '../../scripts/viewport.mjs';
+import { capturePage, pngSize, withViewport } from '../../scripts/viewport.mjs';
 
 const BIN = fileURLToPath(new URL('../../bin/browser-tools.mjs', import.meta.url));
 const PAGE = '<meta name="viewport" content="width=device-width"><style>body{margin:0}table{width:100%}</style>'
@@ -52,6 +52,18 @@ test('a requested screen size reaches the screenshot and the page, and does not 
     // The table spans the desktop page, give or take a scrollbar.
     const pageWidth = await page.evaluate(() => innerWidth);
     assert.ok(element.width > 375 && pageWidth - element.width <= 20, `element ${element.width} on a ${pageWidth} px page`);
+    // Chrome does not draw a hidden tab, and without a drawn frame it keeps the size it was last
+    // given. The tab must be back at its own size when a sized call returns.
+    const size = () => page.evaluate(() => [innerWidth, innerHeight].join());
+    const phone = { width: 375, height: 667, deviceScaleFactor: 1, mobile: true };
+    const own = await size();
+    assert.equal(await withViewport(page, phone, size), '375,667');
+    assert.equal(await size(), own);
+    assert.equal(pngSize(await capturePage(page, { viewport: phone, selector: '#t' })).width, 375);
+    assert.equal(await size(), own);
+    await assert.rejects(capturePage(page, { viewport: phone, selector: '#absent' }), /No element matches #absent/);
+    assert.equal(await size(), own);
+    assert.equal(await page.evaluate(() => document.visibilityState), 'hidden');
     // Leave the fixture as the only tab, so it is the active tab for the commands below.
     for (const other of others) await other.close();
     browser.disconnect();
@@ -93,18 +105,6 @@ test('a requested screen size reaches the screenshot and the page, and does not 
     assert.equal(raw.status, 0, raw.stderr);
     assert.match(raw.stderr, /ends with this command.*--viewport/s);
     assert.equal(Number(await run('eval', 'innerWidth')), desktop);
-
-    // Chrome does not draw a hidden tab, and without a drawn frame it keeps the size it was last
-    // given. A tab opened in the background must still be back at its own size for the next command.
-    assert.equal((await cli('nav', url, '--new')).status, 0);
-    assert.equal(await run('eval', 'document.visibilityState'), 'hidden');
-    const hidden = await run('eval', '[innerWidth, innerHeight].join()');
-    assert.equal(await run('eval', '--viewport', '375x667', '--mobile', '[innerWidth, innerHeight].join()'), '375,667');
-    assert.equal(await run('eval', '[innerWidth, innerHeight].join()'), hidden);
-    assert.equal((await cli('nav', url, '--viewport', '375x667')).status, 0);
-    assert.equal(await run('eval', '[innerWidth, innerHeight].join()'), hidden);
-    assert.equal((await shot('--viewport', '375x667', '--mobile', '--selector', '#t')).width, 375);
-    assert.equal(await run('eval', '[innerWidth, innerHeight].join()'), hidden);
 
     for (const bad of [['--mobile'], ['--scale', '2'], ['--viewport', '375'], ['--viewport', '0x600'], ['--viewport', '375x667', '--scale', '0']]) {
       const result = await cli('screenshot', ...bad);
