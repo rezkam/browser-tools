@@ -247,7 +247,8 @@ Rules that keep a capture honest:
 - Do not set the size with `browser-tools cdp call Emulation.setDeviceMetricsOverride`. The override ends when the call returns, so the next command sees a desktop page even though the call succeeded. The command prints a note on stderr when it is used this way.
 - A page that chooses its layout while loading must be loaded at that size: use `nav --viewport`, then repeat `--viewport` on the later commands.
 - `screenshot` prints the image size on stderr (`375x667 px`) and the file path on stdout. A viewport capture that does not measure the requested size, or a page whose width changes during the capture, fails with exit code 1. A full-page or element capture is as large as its content. Without `--mobile`, that content is narrower than the viewport by the width of the scrollbar.
-- A full-page or element capture leaves the page as it found it. Chrome drops the page's scrollbar during a capture beyond the viewport, which would leave a desktop page 15 px wider for every later command, so `screenshot` and `capturePage` put the layout back. Puppeteer's `page.screenshot({ fullPage: true })` does not.
+- Measure before a full-page or element capture, not after. On a desktop page Chrome drops the scrollbar for such a capture and does not bring it back, so the page is 15 px wider afterwards until it is reloaded. This is Chrome's behavior and is left alone on purpose: putting the scrollbar back takes a window resize that the page can see. A `--mobile` size has no scrollbar and is not affected.
+- On a background tab the tool confirms that the page is back at its own size before the command ends, and fails if it is not.
 - Check a layout measurement with `eval --viewport` at the same size as the screenshot. A table that reads 1048 px wide on a 375 px page means the size was not applied to that command.
 
 Library code gets the same behavior from `@rezkam/browser-tools/viewport.mjs`:

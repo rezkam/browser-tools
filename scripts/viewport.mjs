@@ -49,20 +49,42 @@ export function stripViewportArgs(args) {
   return stripped;
 }
 
+const windowSize = page => page.evaluate(() => `${innerWidth}x${innerHeight}`);
+
+// Chrome does not draw a hidden tab, and without a drawn frame the page keeps the size it was last
+// given, so clearing the override is not enough there. Capturing one pixel makes Chrome draw.
+async function restoreSize(page, session, original) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (await windowSize(page) === original) return;
+    await session.send('Page.captureScreenshot', { format: 'jpeg', quality: 1, clip: { x: 0, y: 0, width: 1, height: 1, scale: 1 } });
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  throw new Error(`The page did not return to its own size (${original}) after the screen size was cleared. It is still ${await windowSize(page)}`);
+}
+
 // Runs the callback with a CDP session that holds the requested size, or no size at all.
 async function withSession(page, viewport, callback) {
   const session = await page.createCDPSession();
+  let original = null;
+  let failed = true;
   try {
     if (viewport) {
+      original = await windowSize(page);
       await session.send('Emulation.setDeviceMetricsOverride', viewport);
       if (viewport.mobile) await session.send('Emulation.setTouchEmulationEnabled', { enabled: true });
     }
-    return await callback(session);
+    const result = await callback(session);
+    failed = false;
+    return result;
   } finally {
     // Detaching drops the overrides, but not always before the next command looks at the page.
     if (viewport?.mobile) await session.send('Emulation.setTouchEmulationEnabled', { enabled: false }).catch(() => {});
     if (viewport) await session.send('Emulation.clearDeviceMetricsOverride').catch(() => {});
+    // A size that outlives its command is the silent failure this module exists to prevent, so it
+    // is an error. It must not replace the error of a command that already failed.
+    const restored = original === null ? null : await restoreSize(page, session, original).then(() => null, error => error);
     await session.detach().catch(() => {});
+    if (restored && !failed) throw restored;
   }
 }
 
@@ -79,7 +101,7 @@ export async function withViewport(page, viewport, callback) {
 // for an IntersectionObserver that never fires on a background tab.
 export async function capturePage(page, { viewport = null, fullPage = false, selector = null } = {}) {
   if (fullPage && selector) throw new Error('Use only one of --full or --selector');
-  return withSession(page, viewport ?? await heldSize(page, fullPage || selector), async (session) => {
+  return withSession(page, viewport, async (session) => {
     const layoutWidth = () => page.evaluate(() => innerWidth);
     const before = viewport ? await layoutWidth() : null;
     let clip = null;
@@ -95,6 +117,8 @@ export async function capturePage(page, { viewport = null, fullPage = false, sel
       clip = { ...box, scale: 1 };
     }
     // A full-page capture has no clip: Chrome then captures the whole document, without the scrollbar gutter.
+    // Chrome drops the page's scrollbar for a capture beyond the viewport and does not bring it back.
+    // That is left alone: restoring it takes a resize the page can see.
     const { data } = await session.send('Page.captureScreenshot', {
       format: 'png', ...(clip ? { clip } : {}), captureBeyondViewport: Boolean(clip || fullPage),
     });
@@ -110,16 +134,6 @@ export async function capturePage(page, { viewport = null, fullPage = false, sel
     }
     return image;
   });
-}
-
-// A capture beyond the viewport makes Chrome drop the page's scrollbar, and the page stays that much
-// wider afterwards. Chrome lays the page out again when an emulated size that was held across the
-// capture is cleared, so a capture without a requested size holds the page's own size, one pixel
-// taller: an override equal to the real size changes nothing and is not laid out again.
-async function heldSize(page, beyondViewport) {
-  if (!beyondViewport) return null;
-  const [width, height] = await page.evaluate(() => [innerWidth, innerHeight]);
-  return { width, height: height + 1, deviceScaleFactor: 0, mobile: false };
 }
 
 // What the image must measure when the request fixes its size. A full-page or element capture is as
