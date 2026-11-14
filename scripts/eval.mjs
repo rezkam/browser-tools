@@ -7,6 +7,7 @@
  *   scripts/eval.mjs 'document.title'
  *   scripts/eval.mjs 'await fetch("/api/data").then(r => r.json())'
  *   scripts/eval.mjs --port 9223 'document.title'
+ *   scripts/eval.mjs --viewport 375x667 --mobile 'innerWidth'
  *   scripts/eval.mjs --owner-token "$BROWSER_TOOLS_OWNER_TOKEN" 'document.title'
  */
 
@@ -14,6 +15,7 @@ import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { format } from 'node:util';
 import { activePage, parseOwnerToken, parsePort, stripBrowserSessionArgs, withBrowser } from './browser-control.mjs';
+import { parseViewport, stripViewportArgs, withViewport } from './viewport.mjs';
 
 if (isDirectExecution()) await main();
 
@@ -21,10 +23,17 @@ async function main() {
   const args = process.argv.slice(2);
   const port = parsePort(args);
   const ownerToken = parseOwnerToken(args);
-  const code = stripBrowserSessionArgs(args).join(' ');
+  let viewport;
+  try {
+    viewport = parseViewport(args);
+  } catch (error) {
+    console.error(`✗ ${error.message}`);
+    process.exit(1);
+  }
+  const code = stripViewportArgs(stripBrowserSessionArgs(args)).join(' ');
 
   if (!code) {
-    console.log("Usage: eval.js [--port <n>] '<javascript>'");
+    console.log("Usage: eval.js [--port <n>] [--viewport <width>x<height> [--mobile] [--scale <n>]] '<javascript>'");
     console.log("  ./eval.js 'document.title'");
     console.log('  ./eval.js \'document.querySelectorAll("a").length\'');
     process.exit(1);
@@ -32,10 +41,10 @@ async function main() {
 
   await withBrowser(port, async (browser) => {
     const page = await activePage(browser);
-    const result = await page.evaluate((c) => {
+    const result = await withViewport(page, viewport, () => page.evaluate((c) => {
       const AsyncFunction = (async () => {}).constructor;
       return new AsyncFunction(`return (${c})`)();
-    }, code);
+    }, code));
 
     printResult(result);
   }, { ownerToken });

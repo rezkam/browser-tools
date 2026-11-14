@@ -22,6 +22,7 @@ import {
   validateCdpMethod,
   withPageCdpSession,
 } from './cdp-common.mjs';
+import { SESSION_SCOPED_NOTE } from './viewport.mjs';
 
 const SCRIPT_FILE = fileURLToPath(import.meta.url);
 
@@ -36,7 +37,9 @@ Options:
   --owner-token <token>    Prefer ${OWNER_TOKEN_ENV} instead
 
 Direct calls target the active tab and require its owner token. Methods that bypass
-managed-browser lifecycle safety are blocked. Prefer --params-file for sensitive input.`);
+managed-browser lifecycle safety are blocked. Prefer --params-file for sensitive input.
+Each call uses its own CDP session, so Emulation overrides end when the call returns.
+For a screen size, use --viewport on screenshot, eval, or nav.`);
 }
 
 function parseParams(args) {
@@ -80,6 +83,7 @@ async function callMethod(args) {
   const result = await withPageCdpSession(port, ownerToken, ({ session }) => session.send(method, params));
   const output = sanitizeCdpCallResult(method, result, { redact: hasFlag(rest, '--redact') });
   console.log(JSON.stringify(output, null, 2));
+  if (/^Emulation\.set/.test(method)) console.error(SESSION_SCOPED_NOTE);
 }
 
 export async function main(args = process.argv.slice(2)) {

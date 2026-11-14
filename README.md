@@ -74,7 +74,7 @@ Use `--profile "<profile or alias>"` when an existing login is needed, `--sync` 
 | Browser lifecycle | `start`, `status`, `stop` | Launch, inspect, stop, clean, reap, and prune managed Chrome sessions |
 | Extensions | `extensions load`, `extensions update` | Load trusted unpacked extensions or reload updated files while retaining identity and settings |
 | Profile configuration | `config` | Discover profiles, list active profiles, and manage task-to-profile mappings |
-| Page control | `nav`, `eval`, `screenshot` | Navigate the active tab or a new background tab, run page JavaScript, and capture PNG screenshots |
+| Page control | `nav`, `eval`, `screenshot` | Navigate the active tab or a new background tab, run page JavaScript, and capture PNG screenshots of the viewport, the full page, or one element, optionally at a set screen size |
 | DOM inspection | `pick` | Select one or more visible elements and return tag, id, class, text, HTML, and parent information |
 | Page extraction | `scrape-page`, `extract-article` | Extract article-like links with timestamps or readable article text from the active tab |
 | Visual recording | `record-gif`, `review-gif` | Record an interaction with pre-roll and post-roll frames, then create a contact sheet and metadata report |
@@ -134,6 +134,24 @@ The root package export and `@rezkam/browser-tools/browser-control.mjs` both exp
 ### Console and page-error events
 
 The Rebrowser backend does not send `Runtime.enable`, because pages can detect it. As a result `page.on('console')` and `page.on('pageerror')` receive nothing, without an error. Page evaluation, navigation, network events, and `exposeFunction` are unaffected. Browser Tools keeps that protection on and offers no way to turn it off. Read page state with `page.evaluate` instead, or have the page report through `exposeFunction`.
+
+### Screen size and screenshots
+
+```bash
+browser-tools screenshot --viewport 375x667 --mobile --port <reported port>
+browser-tools eval --viewport 375x667 --mobile 'innerWidth' --port <reported port>
+```
+
+`--viewport <width>x<height> [--mobile] [--scale <n>]` works on `screenshot`, `eval`, and `nav`, and `screenshot --selector <css>` captures one element. The size lasts for that one command, because Chrome drops an emulated size when the CDP session that set it ends. For the same reason a size sent with `browser-tools cdp call Emulation.setDeviceMetricsOverride` is gone before the next command runs. `screenshot` reports the image size on stderr and fails when a viewport capture does not match the requested size.
+
+```js
+import { capturePage, withViewport } from '@rezkam/browser-tools/viewport.mjs';
+
+const viewport = { width: 375, height: 667, deviceScaleFactor: 2, mobile: true };
+const png = await capturePage(page, { viewport, selector: 'table.results' });
+```
+
+Use `capturePage` on managed tabs in place of Puppeteer's `elementHandle.screenshot()`, which never finishes on a background tab, and `page.screenshot()`, which ignores the scale of a size set on another session.
 
 ### Shared tabs
 
