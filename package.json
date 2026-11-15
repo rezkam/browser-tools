@@ -24,6 +24,7 @@
     "./resource-helper.mjs": "./scripts/resource-helper.mjs",
     "./extensions.mjs": "./scripts/extensions.mjs",
     "./tab-broker.mjs": "./scripts/tab-broker.mjs",
+    "./viewport.mjs": "./scripts/viewport.mjs",
     "./package.json": "./package.json"
   },
   "files": [
