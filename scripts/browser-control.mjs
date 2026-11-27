@@ -10,6 +10,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -18,7 +19,6 @@ import { homedir, tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer-core';
-import WebSocket from 'ws';
 import { discoverChromeBinary, discoverChromeSourceDir, chromePlatformToken } from './browser-platform.mjs';
 
 export const DEFAULT_PORT = 9222;
@@ -441,49 +441,109 @@ export function devToolsActivePortMatches(userDataDir, endpoint) {
   }
 }
 
+function commandHasArgument(command, arg) {
+  if (!command || typeof command !== 'string') return false;
+  if (command.includes('\0')) return command.split('\0').includes(arg);
+  const start = command.indexOf(arg);
+  if (start < 0) return false;
+  const end = start + arg.length;
+  return (start === 0 || /\s/.test(command[start - 1]))
+    && (end === command.length || /\s/.test(command[end]));
+}
+
+export function listeningPidsForPort(port, { timeoutMs = 3000, platform = process.platform } = {}) {
+  const normalizedPort = normalizePort(port);
+  if (platform === 'darwin') {
+    const result = spawnSync('lsof', ['-nP', `-iTCP:${normalizedPort}`, '-sTCP:LISTEN', '-Fp'], {
+      encoding: 'utf-8',
+      timeout: timeoutMs,
+    });
+    if (result.error || result.status !== 0 || !result.stdout) return [];
+    const pids = new Set();
+    for (const line of result.stdout.split(/\r?\n/)) {
+      if (!line.startsWith('p')) continue;
+      const pid = Number.parseInt(line.slice(1), 10);
+      if (Number.isInteger(pid) && pid > 0) pids.add(pid);
+    }
+    return [...pids];
+  }
+  if (platform === 'linux') {
+    const targetHexPort = normalizedPort.toString(16).toUpperCase().padStart(4, '0');
+    const inodes = new Set();
+    for (const procNetFile of ['/proc/net/tcp', '/proc/net/tcp6']) {
+      let content;
+      try { content = readFileSync(procNetFile, 'utf-8'); } catch { continue; }
+      for (const line of content.split(/\r?\n/).slice(1)) {
+        const fields = line.trim().split(/\s+/);
+        if (fields.length < 10) continue;
+        const localAddress = fields[1];
+        const socketState = fields[3];
+        const inode = fields[9];
+        if (socketState !== '0A' || !inode || inode === '0') continue;
+        const colonIndex = localAddress.lastIndexOf(':');
+        if (colonIndex < 0) continue;
+        if (localAddress.slice(colonIndex + 1).toUpperCase() === targetHexPort) {
+          inodes.add(inode);
+        }
+      }
+    }
+    if (!inodes.size) return [];
+    const inodeByTarget = new Map([...inodes].map((inode) => [`socket:[${inode}]`, inode]));
+    const matchedInodes = new Set();
+    const pids = new Set();
+    let procEntries;
+    try { procEntries = readdirSync('/proc'); } catch { return []; }
+    for (const entry of procEntries) {
+      if (!/^\d+$/.test(entry)) continue;
+      const fdDir = `/proc/${entry}/fd`;
+      let fds;
+      try { fds = readdirSync(fdDir); } catch { continue; }
+      for (const fd of fds) {
+        try {
+          const matched = inodeByTarget.get(readlinkSync(`${fdDir}/${fd}`));
+          if (matched) {
+            matchedInodes.add(matched);
+            pids.add(Number.parseInt(entry, 10));
+          }
+        } catch {
+          // Process exited or fd is unreadable.
+        }
+      }
+    }
+    // Fail closed if any listening socket on this port could not be attributed to an inspectable PID.
+    if (matchedInodes.size !== inodes.size) return [];
+    return [...pids];
+  }
+  return [];
+}
+
 // Fixed-port Chromium need not write DevToolsActivePort. A loopback URL alone is
-// not ownership proof: ask the endpoint for its actual browser launch arguments.
-export async function launchedEndpointMatches({ port, endpoint, state, timeoutMs = 3000 }) {
+// not ownership proof: verify from the OS socket table that every process listening
+// on this port matches our managed launch arguments, without needing --enable-automation.
+export async function launchedEndpointMatches({
+  port,
+  endpoint,
+  state,
+  timeoutMs = 3000,
+  listeningPids = (p) => listeningPidsForPort(p, { timeoutMs }),
+  readCommand = commandForPid,
+}) {
   let url;
   try { url = new URL(endpoint); } catch { return false; }
   if (url.hash || url.username || url.password || url.protocol !== 'ws:' || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
     || Number(url.port) !== Number(port) || !url.pathname.startsWith('/devtools/browser/')) return false;
   if (devToolsActivePortMatches(state?.userDataDir, endpoint)) return true;
   if (!state?.managedToken || !state?.userDataDir) return false;
-  return new Promise((resolve) => {
-    let socket;
-    try { socket = new WebSocket(endpoint, { followRedirects: false, handshakeTimeout: timeoutMs, maxPayload: 1024 * 1024 }); }
-    catch { resolve(false); return; }
-    let probeState = { phase: 'connecting' };
-    const finish = (ok) => {
-      if (probeState.phase === 'settled') return;
-      probeState = { phase: 'settled', ok };
-      clearTimeout(timer);
-      socket.terminate();
-      resolve(ok);
-    };
-    const timer = setTimeout(() => finish(false), timeoutMs);
-    socket.on('error', () => finish(false));
-    socket.on('close', () => finish(false));
-    socket.on('open', () => {
-      if (probeState.phase !== 'connecting') return;
-      probeState = { phase: 'checking' };
-      socket.send(JSON.stringify({ id: 1, method: 'Browser.getBrowserCommandLine' }));
-    });
-    socket.on('message', (data) => {
-      if (probeState.phase !== 'checking') return;
-      try {
-        const message = JSON.parse(data.toString());
-        if (message.id !== 1) return;
-        const args = message.result?.arguments;
-        finish(Array.isArray(args) && [
-          '--enable-automation',
-          '--remote-debugging-port=' + port,
-          '--user-data-dir=' + state.userDataDir,
-          '--pi-browser-tools-managed=' + state.managedToken,
-        ].every(arg => args.includes(arg)));
-      } catch { finish(false); }
-    });
+  const pids = listeningPids(port);
+  if (!Array.isArray(pids) || pids.length === 0) return false;
+  const requiredArgs = [
+    `--remote-debugging-port=${port}`,
+    `--user-data-dir=${state.userDataDir}`,
+    `--pi-browser-tools-managed=${state.managedToken}`,
+  ];
+  return pids.every((pid) => {
+    const command = readCommand(pid);
+    return Boolean(command) && requiredArgs.every((arg) => commandHasArgument(command, arg));
   });
 }
 
@@ -1014,18 +1074,23 @@ export function removeChromeProfileLocks(profileDir) {
   }
 }
 
-export function chromeLaunchArgs({ port = DEFAULT_PORT, profileName = null, managedToken = null, userDataDir = null, headless = false, userAgent = null, extensionDebugging = false } = {}) {
+export function chromeLaunchArgs({ port = DEFAULT_PORT, profileName = null, managedToken = null, userDataDir = null, headless = false, userAgent = null, extensionDebugging = false, platform = process.platform } = {}) {
   const normalizedPort = normalizePort(port);
   const launchUserDataDir = userDataDir || (profileName ? profileDataDirForPort(normalizedPort) : freshProfileDirForPort(normalizedPort));
   const args = [
     `--remote-debugging-port=${normalizedPort}`,
     `--user-data-dir=${launchUserDataDir}`,
     '--remote-debugging-address=127.0.0.1',
-    '--enable-automation',
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-sync',
   ];
+  // Chrome 158+ on macOS disables v10 keychain decryption for non-default user-data-dir launches
+  // and switches to a directory-salted v11 key, wiping copied profile cookies on startup. Disable
+  // that protection for copied profiles so cloned sessions keep their decrypted v10 cookies.
+  if (platform === 'darwin' && profileName) {
+    args.push('--disable-features=KeychainKeyProviderUserDataDirProtection');
+  }
   // New headless runs the full browser (extensions and the copied profile still load) without opening
   // a window. Old --headless is a separate lightweight engine that ignores extensions, so keep =new.
   // Bot defenses reject navigator.webdriver and headless Chrome's default 800x600 screen, so a
@@ -2425,18 +2490,9 @@ export function managedChromeCommandSafety({ pid, port, state, command }) {
   const expectedToken = `--pi-browser-tools-managed=${state.managedToken}`;
   const expectedUserDataDir = `--user-data-dir=${state.userDataDir}`;
 
-  const argv = command.includes('\0') ? command.split('\0') : null;
-  const hasArgument = (arg) => {
-    if (argv) return argv.includes(arg);
-    const start = command.indexOf(arg);
-    if (start < 0) return false;
-    const end = start + arg.length;
-    return (start === 0 || /\s/.test(command[start - 1]))
-      && (end === command.length || /\s/.test(command[end]));
-  };
-  if (!hasArgument(expectedDebugPort)) return { ok: false, reason: 'debug-port-mismatch', command };
-  if (!hasArgument(expectedUserDataDir)) return { ok: false, reason: 'user-data-dir-mismatch', command };
-  if (!hasArgument(expectedToken)) return { ok: false, reason: 'managed-token-mismatch', command };
+  if (!commandHasArgument(command, expectedDebugPort)) return { ok: false, reason: 'debug-port-mismatch', command };
+  if (!commandHasArgument(command, expectedUserDataDir)) return { ok: false, reason: 'user-data-dir-mismatch', command };
+  if (!commandHasArgument(command, expectedToken)) return { ok: false, reason: 'managed-token-mismatch', command };
 
   return { ok: true, command };
 }
