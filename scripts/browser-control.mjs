@@ -7,6 +7,7 @@ import {
   constants as fsConstants,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
@@ -1627,6 +1628,48 @@ function launchHeadlessChromeApp({ chromeBin, args }) {
   return { pid };
 }
 
+// Chrome creates its singleton socket and fetcher scratch in TMPDIR and never removes them, so each
+// managed Chrome gets its own directory there, removed on stop or by the next launch after a crash.
+const CHROME_TEMP_PREFIX = 'browser-tools-chrome-';
+const CHROME_TEMP_OWNER = 'browser-tools-owner.json';
+const CHROME_TEMP_LAUNCH_GRACE_MS = 5 * 60_000;
+
+function chromeStillOwns({ pid, startIdentity }) {
+  return processExists(pid) && (!startIdentity || processStartIdentity(pid) === startIdentity);
+}
+
+function removeChromeTempDir(dir) {
+  if (typeof dir !== 'string' || !dir.split(/[\\/]/).pop().startsWith(CHROME_TEMP_PREFIX)) return;
+  rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+}
+
+/** Removes Chrome temporary directories whose recorded Chrome is no longer running. */
+export function sweepOrphanedChromeTempDirs() {
+  const root = tmpdir();
+  let names;
+  try {
+    names = readdirSync(root);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.startsWith(CHROME_TEMP_PREFIX)) continue;
+    const dir = join(root, name);
+    try {
+      let owner = null;
+      try {
+        owner = JSON.parse(readFileSync(join(dir, CHROME_TEMP_OWNER), 'utf-8'));
+      } catch {
+        owner = null;
+      }
+      const keep = owner ? chromeStillOwns(owner) : Date.now() - statSync(dir).mtimeMs < CHROME_TEMP_LAUNCH_GRACE_MS;
+      if (!keep) removeChromeTempDir(dir);
+    } catch {
+      // Another user's directory, or one removed concurrently, is not ours to clean.
+    }
+  }
+}
+
 export function launchChrome({ port = DEFAULT_PORT, profileName = null, userDataDir = null, ownerToken = null, ownerId = null, headless = false, includeGoogle = false, extensionDebugging = false } = {}) {
   ensureCacheDir();
   const normalizedPort = normalizePort(port);
@@ -1644,6 +1687,8 @@ export function launchChrome({ port = DEFAULT_PORT, profileName = null, userData
   }
   mkdirSync(launchUserDataDir, { recursive: true, mode: 0o700 });
   chmodSync(launchUserDataDir, 0o700);
+  sweepOrphanedChromeTempDirs();
+  const tempDir = mkdtempSync(join(tmpdir(), CHROME_TEMP_PREFIX));
   const pidFile = pidFileForPort(normalizedPort);
   const stateFile = stateFileForPort(normalizedPort);
   let proc = headless ? launchHeadlessChromeApp({ chromeBin, args }) : null;
@@ -1651,17 +1696,21 @@ export function launchChrome({ port = DEFAULT_PORT, profileName = null, userData
     proc = spawn(chromeBin, args, {
       detached: true,
       stdio: 'ignore',
+      env: { ...process.env, TMPDIR: tempDir },
     });
     proc.once('error', (error) => {
       rmSync(pidFile, { force: true });
       rmSync(stateFile, { force: true });
+      removeChromeTempDir(tempDir);
       console.error(`[browser-control] Chrome spawn failed: ${error.message}`);
     });
     proc.unref();
   }
   if (!Number.isInteger(proc.pid)) {
+    removeChromeTempDir(tempDir);
     throw new Error(`Chrome failed to start: no child process PID for ${chromeBin}`);
   }
+  writePrivateFile(join(tempDir, CHROME_TEMP_OWNER), JSON.stringify({ pid: proc.pid, startIdentity: processStartIdentity(proc.pid) }));
   writePrivateFile(pidFile, String(proc.pid));
   writePrivateFile(stateFile, JSON.stringify({
     managedBy: 'browser-tools',
@@ -1670,6 +1719,7 @@ export function launchChrome({ port = DEFAULT_PORT, profileName = null, userData
     profileName: profileName || null,
     profileSourceDir: profileName ? browserToolsChromeSourceDir() : null,
     userDataDir: launchUserDataDir,
+    tempDir,
     headless: Boolean(headless),
     includeGoogle: Boolean(includeGoogle),
     extensionDebugging: Boolean(extensionDebugging),
@@ -2062,6 +2112,7 @@ export function stopChrome({ port = DEFAULT_PORT, clean = false, dryRun = false,
   if (!safety.ok && safety.reason === 'process-not-found') {
     rmSync(paths.pidFile, { force: true });
     rmSync(paths.stateFile, { force: true });
+    removeChromeTempDir(state?.tempDir);
     let cleaned = false;
     if (clean && isBrowserToolsUserDataDir(state?.userDataDir)) {
       rmSync(state.userDataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
@@ -2154,6 +2205,7 @@ export function stopChrome({ port = DEFAULT_PORT, clean = false, dryRun = false,
 
   rmSync(paths.pidFile, { force: true });
   rmSync(paths.stateFile, { force: true });
+  removeChromeTempDir(state?.tempDir);
   let cleaned = false;
   if (clean && isBrowserToolsUserDataDir(state?.userDataDir)) {
     rmSync(state.userDataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
