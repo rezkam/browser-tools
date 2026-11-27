@@ -1629,7 +1629,9 @@ function launchHeadlessChromeApp({ chromeBin, args }) {
 }
 
 // Chrome creates its singleton socket and fetcher scratch in TMPDIR and never removes them, so each
-// managed Chrome gets its own directory there, removed on stop or by the next launch after a crash.
+// managed Chrome on Linux gets its own directory there, removed on stop or by the next launch after a
+// crash. macOS cleans its per-user TMPDIR itself, and a directory nested in it would push the socket
+// path past the platform's 104-byte limit, so Chrome there keeps its own temporary directory.
 const CHROME_TEMP_PREFIX = 'browser-tools-chrome-';
 const CHROME_TEMP_OWNER = 'browser-tools-owner.json';
 const CHROME_TEMP_LAUNCH_GRACE_MS = 5 * 60_000;
@@ -1687,8 +1689,11 @@ export function launchChrome({ port = DEFAULT_PORT, profileName = null, userData
   }
   mkdirSync(launchUserDataDir, { recursive: true, mode: 0o700 });
   chmodSync(launchUserDataDir, 0o700);
-  sweepOrphanedChromeTempDirs();
-  const tempDir = mkdtempSync(join(tmpdir(), CHROME_TEMP_PREFIX));
+  let tempDir = null;
+  if (process.platform !== 'darwin') {
+    sweepOrphanedChromeTempDirs();
+    tempDir = mkdtempSync(join(tmpdir(), CHROME_TEMP_PREFIX));
+  }
   const pidFile = pidFileForPort(normalizedPort);
   const stateFile = stateFileForPort(normalizedPort);
   let proc = headless ? launchHeadlessChromeApp({ chromeBin, args }) : null;
@@ -1696,7 +1701,7 @@ export function launchChrome({ port = DEFAULT_PORT, profileName = null, userData
     proc = spawn(chromeBin, args, {
       detached: true,
       stdio: 'ignore',
-      env: { ...process.env, TMPDIR: tempDir },
+      ...(tempDir ? { env: { ...process.env, TMPDIR: tempDir } } : {}),
     });
     proc.once('error', (error) => {
       rmSync(pidFile, { force: true });
@@ -1710,7 +1715,7 @@ export function launchChrome({ port = DEFAULT_PORT, profileName = null, userData
     removeChromeTempDir(tempDir);
     throw new Error(`Chrome failed to start: no child process PID for ${chromeBin}`);
   }
-  writePrivateFile(join(tempDir, CHROME_TEMP_OWNER), JSON.stringify({ pid: proc.pid, startIdentity: processStartIdentity(proc.pid) }));
+  if (tempDir) writePrivateFile(join(tempDir, CHROME_TEMP_OWNER), JSON.stringify({ pid: proc.pid, startIdentity: processStartIdentity(proc.pid) }));
   writePrivateFile(pidFile, String(proc.pid));
   writePrivateFile(stateFile, JSON.stringify({
     managedBy: 'browser-tools',

@@ -9,7 +9,8 @@ import {
 } from '../scripts/browser-control.mjs';
 
 const chromeBin = process.env.BROWSER_TOOLS_CHROME_BIN || browserToolsChromeBin();
-const skip = existsSync(chromeBin) ? false : `no Chrome at ${chromeBin}; set BROWSER_TOOLS_CHROME_BIN`;
+const skip = process.platform === 'darwin' ? 'macOS keeps Chrome in its own per-user temporary directory'
+  : existsSync(chromeBin) ? false : `no Chrome at ${chromeBin}; set BROWSER_TOOLS_CHROME_BIN`;
 
 /** Runs `body` with TMPDIR pointing at an empty private directory, so every leftover is attributable. */
 async function withPrivateTmp(t, body) {
