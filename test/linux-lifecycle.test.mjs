@@ -21,11 +21,23 @@ test('Linux headed launch without a display fails before spawning or writing lif
   }
 });
 
-test('launch arguments retain sandbox and secret-store defaults and bind CDP to loopback', () => {
+test('launch arguments retain sandbox and secret-store defaults, omit --enable-automation, and bind CDP to loopback', () => {
   const args = chromeLaunchArgs({ headless: true });
   assert.ok(args.includes('--remote-debugging-address=127.0.0.1'));
-  assert.ok(args.includes('--enable-automation'));
+  assert.equal(args.includes('--enable-automation'), false);
   assert.equal(args.some(arg => /no-sandbox|password-store|mock-keychain/.test(arg)), false);
+});
+
+test('macOS copied-profile launch disables KeychainKeyProviderUserDataDirProtection without affecting fresh or Linux launches', () => {
+  const macCopied = chromeLaunchArgs({ profileName: 'Default', platform: 'darwin' });
+  assert.ok(macCopied.includes('--disable-features=KeychainKeyProviderUserDataDirProtection'));
+  assert.equal(macCopied.includes('--enable-automation'), false);
+
+  const macFresh = chromeLaunchArgs({ profileName: null, platform: 'darwin' });
+  assert.equal(macFresh.includes('--disable-features=KeychainKeyProviderUserDataDirProtection'), false);
+
+  const linuxCopied = chromeLaunchArgs({ profileName: 'Default', platform: 'linux' });
+  assert.equal(linuxCopied.includes('--disable-features=KeychainKeyProviderUserDataDirProtection'), false);
 });
 
 test('process identity does not accept prefix-matching ports or tokens', () => {

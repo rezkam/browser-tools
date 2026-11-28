@@ -1,58 +1,57 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { WebSocketServer } from 'ws';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { launchedEndpointMatches, syncChromeProfile, chromeLaunchArgs, managedChromeCommandSafety } from '../scripts/browser-control.mjs';
 import { discoverChromeSourceDir } from '../scripts/browser-platform.mjs';
 
-for (const mode of ['handshake-stall', 'cdp-stall', 'redirect']) {
-  test('endpoint verifier bounds and closes ' + mode, { timeout: 3000 }, async () => {
-    const sockets = new Set();
-    let redirected = false;
-    const other = createServer(() => { redirected = true; });
-    await new Promise(r => other.listen(0, '127.0.0.1', r));
-    const server = createServer();
-    const wss = mode === 'cdp-stall' ? new WebSocketServer({ server }) : null;
-    server.on('connection', socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
-    if (mode !== 'cdp-stall') server.on('upgrade', (req, socket) => {
-      socket.on('end', () => socket.end());
-      if (mode === 'redirect') socket.end('HTTP/1.1 302 Found\r\nLocation: ws://127.0.0.1:' + other.address().port + '/outside\r\nContent-Length: 0\r\n\r\n');
-    });
-    await new Promise(r => server.listen(0, '127.0.0.1', r));
-    const port = server.address().port;
-    try {
-      assert.equal(await launchedEndpointMatches({ port, endpoint: 'ws://127.0.0.1:' + port + '/devtools/browser/test', state: { userDataDir: '/nonexistent', managedToken: 'test' }, timeoutMs: 150 }), false);
-      await new Promise(r => setTimeout(r, 50));
-      assert.equal(sockets.size, 0);
-      assert.equal(redirected, false);
-    } finally { for (const socket of sockets) socket.destroy(); wss?.close(); await new Promise(r => server.close(r)); await new Promise(r => other.close(r)); }
-  });
-}
-
-test('endpoint probe state remains separate from the managed launch identity', async (t) => {
-  const server = createServer();
-  const wss = new WebSocketServer({ server });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => { wss.close(); server.close(); });
+test('endpoint verifier rejects non-managed local listeners without opening a WebSocket', { timeout: 3000 }, async () => {
+  let connected = false;
+  const server = createServer(() => { connected = true; });
+  server.on('upgrade', () => { connected = true; });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
   const port = server.address().port;
+  try {
+    assert.equal(await launchedEndpointMatches({
+      port,
+      endpoint: 'ws://127.0.0.1:' + port + '/devtools/browser/test',
+      state: { userDataDir: '/nonexistent', managedToken: 'test' },
+      timeoutMs: 150,
+    }), false);
+    assert.equal(connected, false);
+  } finally {
+    await new Promise(r => server.close(r));
+  }
+});
+
+test('endpoint verifier matches listener PID command arguments without --enable-automation', async () => {
+  const port = 19455;
   const state = { userDataDir: '/nonexistent/fixture-profile', managedToken: 'fixture-launch' };
-  wss.on('connection', (socket) => socket.on('message', (data) => {
-    const { id, method } = JSON.parse(data);
-    assert.equal(method, 'Browser.getBrowserCommandLine');
-    socket.send(JSON.stringify({ id, result: { arguments: [
-      '--enable-automation', `--remote-debugging-port=${port}`,
-      `--user-data-dir=${state.userDataDir}`, `--pi-browser-tools-managed=${state.managedToken}`,
-    ] } }));
-  }));
-  const probe = (identity) => launchedEndpointMatches({
-    port, endpoint: `ws://127.0.0.1:${port}/devtools/browser/fixture`, state: identity,
+  const managedCommand = [
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    `--remote-debugging-port=${port}`,
+    `--user-data-dir=${state.userDataDir}`,
+    `--pi-browser-tools-managed=${state.managedToken}`,
+    '',
+  ].join('\0');
+  const probe = (identity, listeners = [4242], commands = new Map([[4242, managedCommand]])) => launchedEndpointMatches({
+    port,
+    endpoint: `ws://127.0.0.1:${port}/devtools/browser/fixture`,
+    state: identity,
+    listeningPids: () => listeners,
+    readCommand: (pid) => commands.get(pid) ?? null,
   });
   assert.equal(await probe(state), true);
   assert.equal(await probe({ ...state, managedToken: 'other-launch' }), false);
   assert.equal(await probe({ ...state, userDataDir: '/nonexistent/other-profile' }), false);
+  assert.equal(await probe(state, []), false, 'no listener must fail closed');
+  assert.equal(
+    await probe(state, [4242, 9999], new Map([[4242, managedCommand], [9999, 'node rogue-server.js']])),
+    false,
+    'any non-matching listener on the same port must fail closed',
+  );
   assert.equal(await probe(state), true, 'a fresh probe can retry after rejection');
 });
 
