@@ -1,5 +1,11 @@
 # @rezkam/browser-tools
 
+## 2.1.3
+
+### Patch Changes
+
+- c4474d7: Preserve copied-profile cookies on Chrome 158+ on macOS by disabling `KeychainKeyProviderUserDataDirProtection` for cloned profiles, and remove `--enable-automation` from Chrome launches by verifying fixed-port DevTools endpoint ownership through OS socket-to-PID inspection instead of `Browser.getBrowserCommandLine`.
+
 ## 2.1.2
 
 ### Patch Changes
